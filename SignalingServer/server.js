@@ -1,5 +1,5 @@
 const WebSocket = require('ws');
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 8081;
 const wss = new WebSocket.Server({ 
     port: PORT,
     host: '0.0.0.0' // Bind tất cả interfaces để accept WiFi connections
