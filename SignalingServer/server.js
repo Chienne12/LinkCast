@@ -132,6 +132,41 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Hệ thống cũ - join với sessionId (backward compatibility)
+    if (type === 'join') {
+      const { sessionId, role } = msg;
+      if (!sessionId || !role || !['android', 'web'].includes(role)) {
+        return send(ws, { type: 'error', message: 'join requires sessionId + role(android|web)' });
+      }
+      
+      // Tạo room với sessionId làm roomCode
+      const roomCode = sessionId;
+      if (!rooms.has(roomCode)) {
+        rooms.set(roomCode, {
+          android: null,
+          web: null,
+          createdAt: Date.now(),
+          expiresAt: Date.now() + (30 * 60 * 1000), // 30 phút cho hệ thống cũ
+          used: false
+        });
+      }
+      
+      const room = rooms.get(roomCode);
+      const old = room[role];
+      if (old && old !== ws) {
+        try { old.close(4001, 'replaced by new client'); } catch {}
+      }
+      room[role] = ws;
+      ws.roomCode = roomCode;
+      ws.role = role;
+
+      const peer = getPeer(roomCode, role);
+      send(ws, { type: 'joined', sessionId, role, peerReady: !!peer });
+      send(peer, { type: 'peer-joined', sessionId, role });
+      console.log(`Legacy join: ${sessionId} by ${role}`);
+      return;
+    }
+
     // Xử lý WebRTC signaling
     if (['offer', 'answer', 'ice', 'cmd'].includes(type)) {
       if (!ws.roomCode || !ws.role) {
@@ -160,4 +195,4 @@ setInterval(() => {
   });
 }, 30000);
 
-console.log(`WS signaling server listening on ws://0.0.0.0:${PORT} (WiFi mode with Room Management)`);
+console.log(`WS signaling server listening on ws://0.0.0.0:${PORT} (Hybrid mode: Room Management + Legacy Support)`);
