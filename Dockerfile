@@ -22,7 +22,7 @@ COPY . .
 RUN mkdir -p streams
 
 # Expose port (Railway sẽ tự động gán PORT)
-EXPOSE 8082
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
