@@ -1,0 +1,8 @@
+[build]
+builder = "nixpacks"
+
+[build.nixpacksConfig]
+packages = ["nodejs", "ffmpeg"]
+
+[deploy]
+startCommand = "npm start"
