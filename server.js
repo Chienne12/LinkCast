@@ -4,7 +4,7 @@ const url = require('url');
 const path = require('path');
 const fs = require('fs');
 const StreamingService = require('./streaming-service');
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 8082;
 
 // ✅ MESSAGES CONSTANTS
 const MESSAGES = {
