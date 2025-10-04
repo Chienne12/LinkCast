@@ -139,11 +139,12 @@ class StreamingService {
             this.activeStreams.set(roomCode, ffmpeg);
 
             // Đợi FFmpeg khởi tạo với timeout ngắn hơn vì stdin stream
+            console.log(`🔧 Waiting for FFmpeg initialization for room ${roomCode}...`);
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     console.log(`✅ FFmpeg stdin stream started for room ${roomCode}`);
                     resolve();
-                }, 2000); // 2 giây cho stdin stream
+                }, 1000); // Giảm xuống 1 giây
 
                 // Cleanup timeout
                 const originalResolve = resolve;
@@ -154,9 +155,13 @@ class StreamingService {
             });
 
             // Đợi playlist được tạo và notify clients
-            // playlistPath đã được khai báo ở trên
+            console.log(`🔍 Waiting for playlist creation at: ${playlistPath}`);
             await new Promise((resolve, reject) => {
+                let checkCount = 0;
                 const checkInterval = setInterval(() => {
+                    checkCount++;
+                    console.log(`📋 Check ${checkCount}: Looking for playlist at ${playlistPath}`);
+                    
                     if (fs.existsSync(playlistPath)) {
                         clearInterval(checkInterval);
                         
@@ -165,18 +170,20 @@ class StreamingService {
                         const hlsUrl = `${serverAddress}/streams/${roomCode}/playlist.m3u8`;
                         const watchUrl = `${serverAddress}/watch/${roomCode}`;
                         
+                        console.log(`📺 HLS playlist ready for room ${roomCode}: ${hlsUrl}`);
+                        
                         // Gửi notification đến server endpoint bằng http.request()
                         this.notifyStreamReady(serverAddress, roomCode, hlsUrl, watchUrl);
                         
-                        console.log(`📺 HLS playlist ready for room ${roomCode}: ${hlsUrl}`);
                         resolve();
                     }
-                }, 500);
+                }, 200); // Giảm interval xuống 200ms để check nhanh hơn
                 
                 setTimeout(() => {
                     clearInterval(checkInterval);
+                    console.error(`❌ Playlist timeout after ${checkCount} checks for room ${roomCode}`);
                     reject(new Error('Playlist timeout'));
-                }, 15000);
+                }, 10000); // Giảm timeout xuống 10 giây
             });
 
             return this.getPlaylistUrl(roomCode);
