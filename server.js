@@ -1101,8 +1101,8 @@ setInterval(() => {
   });
 }, 30000);
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`WS signaling server listening on ws://0.0.0.0:${PORT} (Hybrid mode: Room Management + Legacy Support)`);
-  console.log(`Server accessible at: http://${SERVER_IP}:${PORT}`);
-  console.log(`WebSocket endpoint: ws://${SERVER_IP}:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`✅ WebSocket endpoint: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
+  console.log(`✅ Server accessible at: http://${SERVER_IP}:${PORT}`);
 });
