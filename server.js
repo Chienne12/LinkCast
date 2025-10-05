@@ -734,8 +734,8 @@ function cleanupExpiredRooms() {
   }
 }
 
-// Start cleanup interval - kiểm tra mỗi 10 giây
-setInterval(cleanupExpiredRooms, 10000);
+// Start cleanup interval - kiểm tra mỗi 30 giây
+setInterval(cleanupExpiredRooms, 30000);
 
 wss.on('connection', (ws, req) => {
   ws.isAlive = true;
@@ -746,6 +746,8 @@ wss.on('connection', (ws, req) => {
   
   if (pathname === '/stream-upload') {
     let roomCode = null;
+    let isInitialized = false;
+    const binaryQueue = []; // Queue để lưu binary data khi chưa init
     
     console.log(MESSAGES.STREAM_UPLOAD_CONNECTED);
     
@@ -754,11 +756,12 @@ wss.on('connection', (ws, req) => {
         if (typeof data === 'string') {
           // JSON control message
           const msg = JSON.parse(data);
+          
           if (msg.type === 'init') {
             roomCode = msg.roomCode;
             console.log(`🔧 Stream init received: roomCode=${roomCode}`);
             
-            // ✅ THÊM: Validate room code
+            // Validate room code
             if (!roomCode || typeof roomCode !== 'string' || roomCode.length !== 6) {
               console.log(`❌ Invalid room code format: ${roomCode}`);
               ws.send(JSON.stringify({
@@ -768,9 +771,10 @@ wss.on('connection', (ws, req) => {
               return;
             }
             
-            // ✅ THÊM: Check room exists
+            // Check room exists
             const normalizedRoomCode = roomCode.toUpperCase();
             console.log(`🔍 Checking room exists: ${normalizedRoomCode}, rooms: ${Array.from(rooms.keys())}`);
+            
             if (!rooms.has(normalizedRoomCode)) {
               console.log(`❌ Room not found: ${normalizedRoomCode}`);
               ws.send(JSON.stringify({
@@ -780,50 +784,72 @@ wss.on('connection', (ws, req) => {
               return;
             }
             
-            // ✅ THÊM: Store roomCode in WebSocket for binary data processing
+            // Store normalized roomCode
+            roomCode = normalizedRoomCode;
             ws.roomCode = normalizedRoomCode;
             
-            console.log(`🎬 Stream upload initialized for room ${roomCode}`);
+            console.log(`🎬 Starting FFmpeg for room ${roomCode}...`);
             
-            // Bắt đầu FFmpeg với stdin input
             try {
-              console.log(`🚀 Starting FFmpeg stream for room ${roomCode}...`);
               const playlistUrl = await streamingService.startStreamFromStdin(roomCode);
               
-              // Gửi stream-started message ngay lập tức
+              // ✅ Mark as initialized BEFORE sending response
+              isInitialized = true;
+              
+              // Send confirmation
               const response = { 
                 type: 'stream-started', 
                 playlistUrl: playlistUrl,
                 roomCode: roomCode 
               };
+              console.log(`📤 Sending stream-started:`, response);
               ws.send(JSON.stringify(response));
-              console.log(`✅ HLS stream started for room ${roomCode}: ${playlistUrl}`);
-              console.log(`📤 Sent stream-started message:`, response);
+              
+              // ✅ Process queued binary data
+              if (binaryQueue.length > 0) {
+                console.log(`📦 Processing ${binaryQueue.length} queued binary chunks...`);
+                for (const queuedChunk of binaryQueue) {
+                  streamingService.writeChunk(roomCode, queuedChunk);
+                }
+                binaryQueue.length = 0; // Clear queue
+                console.log(`✅ Queued chunks processed`);
+              }
               
             } catch (error) {
-              console.error(`❌ Failed to start stream for room ${roomCode}:`, error);
-              const errorResponse = { 
+              console.error(`❌ Failed to start FFmpeg:`, error);
+              ws.send(JSON.stringify({ 
                 type: 'stream-failed', 
                 error: error.message,
                 roomCode: roomCode
-              };
-              ws.send(JSON.stringify(errorResponse));
-              console.log(`📤 Sent stream-failed message:`, errorResponse);
+              }));
             }
           }
+          
         } else {
           // Binary data - video chunks
-          const currentRoomCode = ws.roomCode || roomCode;
-          console.log(`📦 Binary data received: roomCode=${currentRoomCode}, ws.roomCode=${ws.roomCode}, localRoomCode=${roomCode}`);
-          if (currentRoomCode) {
-            streamingService.writeChunk(currentRoomCode, data);
-            console.log(`✅ Chunk written for room ${currentRoomCode}`);
-          } else {
-            console.warn(MESSAGES.BINARY_DATA_NO_ROOM);
+          
+          // ✅ Queue binary data if not initialized yet
+          if (!isInitialized || !roomCode) {
+            console.log(`📦 Queueing binary chunk (not initialized yet), queue size: ${binaryQueue.length + 1}`);
+            binaryQueue.push(data);
+            
+            // ✅ Limit queue size to prevent memory overflow
+            if (binaryQueue.length > 50) {
+              console.warn(`⚠️ Binary queue too large (${binaryQueue.length}), dropping oldest chunks`);
+              binaryQueue.shift(); // Remove oldest chunk
+            }
+            return;
+          }
+          
+          // Write chunk if initialized
+          const writeSuccess = streamingService.writeChunk(roomCode, data);
+          if (!writeSuccess) {
+            console.warn(`⚠️ Failed to write chunk for room ${roomCode}`);
           }
         }
+        
       } catch (error) {
-        console.error('❌ Error processing stream upload message:', error);
+        console.error('❌ Error processing stream message:', error);
         ws.send(JSON.stringify({ 
           type: 'error', 
           message: 'Error processing message',
@@ -831,6 +857,30 @@ wss.on('connection', (ws, req) => {
         }));
       }
     });
+    
+    ws.on('close', () => {
+      console.log(`🔌 Stream WebSocket closed for room ${roomCode}`);
+      
+      // Cleanup
+      binaryQueue.length = 0;
+      
+      if (roomCode) {
+        streamingService.stopStream(roomCode);
+      }
+    });
+    
+    ws.on('error', (error) => {
+      console.error('❌ Stream WebSocket error:', error);
+      
+      // Cleanup
+      binaryQueue.length = 0;
+      
+      if (roomCode) {
+        streamingService.stopStream(roomCode);
+      }
+    });
+    
+    return; // Exit early for stream upload connections
     
     ws.on('close', () => {
       console.log(`🔌 Stream upload WebSocket closed for room ${roomCode}`);
