@@ -1105,4 +1105,16 @@ server.listen(PORT, () => {
   console.log(`✅ Server listening on port ${PORT}`);
   console.log(`✅ WebSocket endpoint: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
   console.log(`✅ Server accessible at: http://${SERVER_IP}:${PORT}`);
+  
+  // Debug FFmpeg availability
+  const { exec } = require('child_process');
+  exec('ffmpeg -version', (error, stdout, stderr) => {
+    if (error) {
+      console.error('❌ FFmpeg not available:', error.message);
+      console.error('❌ This will cause HLS streaming to fail!');
+    } else {
+      console.log('✅ FFmpeg is available');
+      console.log('📋 FFmpeg version:', stdout.split('\n')[0]);
+    }
+  });
 });

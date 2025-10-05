@@ -1,8 +1,12 @@
 [build]
 builder = "nixpacks"
 
-[build.nixpacksConfig]
-packages = ["nodejs", "ffmpeg"]
-
 [deploy]
-startCommand = "npm start"
+startCommand = "node server.js"
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+[env]
+NODE_ENV = "production"
