@@ -51,11 +51,11 @@ const MESSAGES = {
   JOIN_REQUIRES: 'join requires sessionId + role(android|web)'
 };
 
-// Initialize streaming service
-const streamingService = new StreamingService();
-
 // Room management system với mã bảo mật
 const rooms = new Map(); // roomCode -> { android: WebSocket|null, web: WebSocket|null, createdAt: number, expiresAt: number, used: boolean }
+
+// Initialize streaming service with rooms reference
+const streamingService = new StreamingService(rooms);
 const roomCleanupInterval = 30000; // 30 giây
 
 // Get server IP address for cross-device access
@@ -736,30 +736,42 @@ wss.on('connection', (ws, req) => {
               return;
             }
             
+            // ✅ THÊM: Store roomCode in WebSocket for binary data processing
+            ws.roomCode = normalizedRoomCode;
+            
             console.log(`🎬 Stream upload initialized for room ${roomCode}`);
             
             // Bắt đầu FFmpeg với stdin input
             try {
+              console.log(`🚀 Starting FFmpeg stream for room ${roomCode}...`);
               const playlistUrl = await streamingService.startStreamFromStdin(roomCode);
-              ws.send(JSON.stringify({ 
+              
+              // Gửi stream-started message ngay lập tức
+              const response = { 
                 type: 'stream-started', 
                 playlistUrl: playlistUrl,
                 roomCode: roomCode 
-              }));
+              };
+              ws.send(JSON.stringify(response));
               console.log(`✅ HLS stream started for room ${roomCode}: ${playlistUrl}`);
+              console.log(`📤 Sent stream-started message:`, response);
+              
             } catch (error) {
               console.error(`❌ Failed to start stream for room ${roomCode}:`, error);
-              ws.send(JSON.stringify({ 
+              const errorResponse = { 
                 type: 'stream-failed', 
                 error: error.message,
                 roomCode: roomCode
-              }));
+              };
+              ws.send(JSON.stringify(errorResponse));
+              console.log(`📤 Sent stream-failed message:`, errorResponse);
             }
           }
         } else {
           // Binary data - video chunks
-          if (roomCode) {
-            streamingService.writeChunk(roomCode, data);
+          const currentRoomCode = ws.roomCode || roomCode;
+          if (currentRoomCode) {
+            streamingService.writeChunk(currentRoomCode, data);
           } else {
             console.warn(MESSAGES.BINARY_DATA_NO_ROOM);
           }

@@ -5,11 +5,12 @@ const http = require('http');
 const https = require('https');
 
 class StreamingService {
-    constructor() {
+    constructor(rooms = null) {
         this.activeStreams = new Map(); // roomCode -> ffmpeg process
         this.stdinProcesses = new Map(); // roomCode -> stdin stream
         this.streamDir = path.join(__dirname, 'streams');
         this.lastProgressLog = new Map(); // roomCode -> timestamp để throttle log
+        this.rooms = rooms; // Reference to rooms Map from server.js
         
         // Viewer tracking system
         this.viewerCounts = new Map(); // roomCode -> viewer count
@@ -80,7 +81,35 @@ class StreamingService {
 
             const ffmpeg = spawn('ffmpeg', ffmpegArgs);
             
-            // Lưu stdin stream để write chunks
+            // ✅ FIX: Đợi FFmpeg stdin ready trước khi lưu và tiếp tục
+            console.log(`🔧 Waiting for FFmpeg stdin ready for room ${roomCode}...`);
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('FFmpeg stdin ready timeout'));
+                }, 3000); // 3 giây timeout cho stdin ready
+                
+                // Check if stdin is immediately writable
+                if (ffmpeg.stdin && ffmpeg.stdin.writable) {
+                    console.log(`✅ FFmpeg stdin immediately ready for room ${roomCode}`);
+                    clearTimeout(timeout);
+                    resolve();
+                } else {
+                    // Wait for stdin to become writable
+                    const checkStdin = () => {
+                        if (ffmpeg.stdin && ffmpeg.stdin.writable) {
+                            console.log(`✅ FFmpeg stdin ready for room ${roomCode}`);
+                            clearTimeout(timeout);
+                            resolve();
+                        } else {
+                            // Check again in 50ms
+                            setTimeout(checkStdin, 50);
+                        }
+                    };
+                    checkStdin();
+                }
+            });
+            
+            // Lưu stdin stream SAU KHI đã ready
             this.stdinProcesses.set(roomCode, ffmpeg.stdin);
             
             ffmpeg.stdout.on('data', (data) => {
@@ -138,13 +167,13 @@ class StreamingService {
             // Lưu process
             this.activeStreams.set(roomCode, ffmpeg);
 
-            // Đợi FFmpeg khởi tạo với timeout ngắn hơn vì stdin stream
-            console.log(`🔧 Waiting for FFmpeg initialization for room ${roomCode}...`);
+            // Đợi FFmpeg khởi tạo hoàn tất sau khi stdin ready
+            console.log(`🔧 FFmpeg stdin ready, waiting for process initialization for room ${roomCode}...`);
             await new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
-                    console.log(`✅ FFmpeg stdin stream started for room ${roomCode}`);
+                    console.log(`✅ FFmpeg process initialization completed for room ${roomCode}`);
                     resolve();
-                }, 1000); // Giảm xuống 1 giây
+                }, 1000); // Giảm xuống 1 giây vì stdin đã ready
 
                 // Cleanup timeout
                 const originalResolve = resolve;
@@ -166,7 +195,7 @@ class StreamingService {
                         clearInterval(checkInterval);
                         
                         // Notify clients qua HTTP endpoint
-                        const serverAddress = process.env.DOMAIN || `http://localhost:${process.env.PORT || 8082}`;
+                        const serverAddress = process.env.DOMAIN || `http://localhost:${process.env.PORT || 8080}`;
                         const hlsUrl = `${serverAddress}/streams/${roomCode}/playlist.m3u8`;
                         const watchUrl = `${serverAddress}/watch/${roomCode}`;
                         
@@ -174,6 +203,9 @@ class StreamingService {
                         
                         // Gửi notification đến server endpoint bằng http.request()
                         this.notifyStreamReady(serverAddress, roomCode, hlsUrl, watchUrl);
+                        
+                        // ✅ THÊM: Notify Web Client qua WebSocket
+                        this.notifyWebClientStreamReady(roomCode, hlsUrl, watchUrl);
                         
                         resolve();
                     }
@@ -472,6 +504,9 @@ class StreamingService {
         }
         
         console.log(`👥 Viewer joined room ${roomCode}. Total viewers: ${currentCount + 1}`);
+        
+        // ✅ THÊM: Notify Web Client about viewer count
+        this.notifyViewerCountUpdate(roomCode, currentCount + 1);
     }
 
     /**
@@ -485,6 +520,9 @@ class StreamingService {
         this.lastViewerActivity.set(roomCode, Date.now());
         
         console.log(`👥 Viewer left room ${roomCode}. Total viewers: ${newCount}`);
+        
+        // ✅ THÊM: Notify Web Client about viewer count
+        this.notifyViewerCountUpdate(roomCode, newCount);
         
         // Start auto-stop timer if no viewers
         if (newCount === 0 && this.activeStreams.has(roomCode)) {
@@ -559,6 +597,76 @@ class StreamingService {
      */
     getViewerCount(roomCode) {
         return this.viewerCounts.get(roomCode) || 0;
+    }
+
+    /**
+     * Notify Web Client về viewer count update
+     * @param {string} roomCode - Mã phòng
+     * @param {number} viewerCount - Số lượng viewers
+     */
+    notifyViewerCountUpdate(roomCode, viewerCount) {
+        try {
+            if (!this.rooms) {
+                console.warn('⚠️ Rooms reference not available');
+                return;
+            }
+            
+            const room = this.rooms.get(roomCode);
+            
+            if (room && room.web && room.web.readyState === 1) { // WebSocket.OPEN
+                const viewerUpdateMessage = {
+                    type: 'viewer_count_update',
+                    roomCode: roomCode,
+                    viewerCount: viewerCount,
+                    timestamp: new Date().toISOString()
+                };
+                
+                room.web.send(JSON.stringify(viewerUpdateMessage));
+                console.log(`📤 Sent viewer count update to Web Client: ${viewerCount} viewers for room ${roomCode}`);
+            }
+        } catch (error) {
+            console.error('❌ Error notifying viewer count update:', error.message);
+        }
+    }
+
+    /**
+     * Notify Web Client qua WebSocket khi stream ready
+     * @param {string} roomCode - Mã phòng
+     * @param {string} hlsUrl - URL HLS playlist
+     * @param {string} watchUrl - URL trang xem
+     */
+    notifyWebClientStreamReady(roomCode, hlsUrl, watchUrl) {
+        try {
+            if (!this.rooms) {
+                console.warn('⚠️ Rooms reference not available');
+                return;
+            }
+            
+            const room = this.rooms.get(roomCode);
+            
+            if (room && room.web && room.web.readyState === 1) { // WebSocket.OPEN
+                const streamReadyMessage = {
+                    type: 'stream_ready',
+                    roomCode: roomCode,
+                    hlsUrl: hlsUrl,
+                    watchPageUrl: watchUrl,
+                    timestamp: new Date().toISOString()
+                };
+                
+                room.web.send(JSON.stringify(streamReadyMessage));
+                console.log(`📤 Sent stream_ready to Web Client for room ${roomCode}`);
+                
+                // ✅ THÊM: Notify Android client too if available
+                if (room.android && room.android.readyState === 1) {
+                    room.android.send(JSON.stringify(streamReadyMessage));
+                    console.log(`📤 Sent stream_ready to Android Client for room ${roomCode}`);
+                }
+            } else {
+                console.warn(`⚠️ Web Client not available for room ${roomCode}`);
+            }
+        } catch (error) {
+            console.error('❌ Error notifying Web Client:', error.message);
+        }
     }
 
     /**
