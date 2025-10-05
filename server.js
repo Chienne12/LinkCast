@@ -158,6 +158,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Server info endpoint
+  if (pathname === '/api/server-info' && method === 'GET') {
+    const wsEndpoint = process.env.RAILWAY_PUBLIC_DOMAIN 
+      ? `wss://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+      : `ws://localhost:${PORT}`;
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      serverAddress: wsEndpoint,
+      domain: process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost',
+      port: PORT,
+      environment: process.env.NODE_ENV || 'development',
+      timestamp: new Date().toISOString()
+    }));
+    return;
+  }
+
   // Stream ready notification endpoint
   if (pathname === '/api/notify-stream-ready' && method === 'POST') {
     let body = '';
@@ -1132,7 +1149,12 @@ setInterval(() => {
 
 server.listen(PORT, () => {
   console.log(`✅ Server listening on port ${PORT}`);
-  console.log(`✅ WebSocket endpoint: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost'}`);
+  
+  // ✅ FIX: WebSocket endpoint cho Railway
+  const wsEndpoint = process.env.RAILWAY_PUBLIC_DOMAIN 
+    ? `wss://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : `ws://localhost:${PORT}`;
+  console.log(`✅ WebSocket endpoint: ${wsEndpoint}`);
   console.log(`✅ Server accessible at: http://${SERVER_IP}:${PORT}`);
   
   // Debug FFmpeg availability
