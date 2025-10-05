@@ -1,11 +1,14 @@
 [phases.setup]
-nixPkgs = ["nodejs", "ffmpeg"]
+nixPkgs = ["nodejs-18_x", "ffmpeg-full"]
 
 [phases.install]
-cmds = ["npm ci"]
+cmds = ["npm ci --only=production"]
 
 [phases.build]
-cmds = ["npm run build"]
+cmds = ["mkdir -p streams"]
 
 [start]
 cmd = "node server.js"
+
+[variables]
+NODE_ENV = "production"

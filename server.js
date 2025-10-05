@@ -135,6 +135,29 @@ const server = http.createServer((req, res) => {
     return res.end('ok');
   }
 
+  // Test FFmpeg availability
+  if (pathname === '/test-ffmpeg' && method === 'GET') {
+    const { exec } = require('child_process');
+    
+    exec('ffmpeg -version', (error, stdout, stderr) => {
+      if (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ 
+          error: 'FFmpeg not available',
+          message: error.message 
+        }));
+      }
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ 
+        success: true,
+        version: stdout.split('\n')[0],
+        details: stdout
+      }));
+    });
+    return;
+  }
+
   // Stream ready notification endpoint
   if (pathname === '/api/notify-stream-ready' && method === 'POST') {
     let body = '';

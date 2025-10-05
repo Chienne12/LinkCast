@@ -1,0 +1,9 @@
+node_modules/
+npm-debug.log*
+streams/
+.env
+.DS_Store
+*.log
+
+# Railway specific
+.nixpacks/
