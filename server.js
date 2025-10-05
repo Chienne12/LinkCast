@@ -716,9 +716,11 @@ wss.on('connection', (ws, req) => {
           const msg = JSON.parse(data);
           if (msg.type === 'init') {
             roomCode = msg.roomCode;
+            console.log(`🔧 Stream init received: roomCode=${roomCode}`);
             
             // ✅ THÊM: Validate room code
             if (!roomCode || typeof roomCode !== 'string' || roomCode.length !== 6) {
+              console.log(`❌ Invalid room code format: ${roomCode}`);
               ws.send(JSON.stringify({
                 type: 'error',
                 message: MESSAGES.INVALID_ROOM_CODE_FORMAT
@@ -728,7 +730,9 @@ wss.on('connection', (ws, req) => {
             
             // ✅ THÊM: Check room exists
             const normalizedRoomCode = roomCode.toUpperCase();
+            console.log(`🔍 Checking room exists: ${normalizedRoomCode}, rooms: ${Array.from(rooms.keys())}`);
             if (!rooms.has(normalizedRoomCode)) {
+              console.log(`❌ Room not found: ${normalizedRoomCode}`);
               ws.send(JSON.stringify({
                 type: 'error',
                 message: MESSAGES.ROOM_NOT_FOUND
@@ -770,8 +774,10 @@ wss.on('connection', (ws, req) => {
         } else {
           // Binary data - video chunks
           const currentRoomCode = ws.roomCode || roomCode;
+          console.log(`📦 Binary data received: roomCode=${currentRoomCode}, ws.roomCode=${ws.roomCode}, localRoomCode=${roomCode}`);
           if (currentRoomCode) {
             streamingService.writeChunk(currentRoomCode, data);
+            console.log(`✅ Chunk written for room ${currentRoomCode}`);
           } else {
             console.warn(MESSAGES.BINARY_DATA_NO_ROOM);
           }
