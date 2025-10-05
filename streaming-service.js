@@ -80,6 +80,13 @@ class StreamingService {
             console.log(`Starting FFmpeg from stdin for room ${roomCode}:`, ffmpegArgs.join(' '));
 
             const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+            console.log(`FFmpeg spawned, PID: ${ffmpeg.pid}`);
+            
+            // ✅ THÊM: FFmpeg spawn error handling
+            ffmpeg.on('error', (error) => {
+              console.error(`FFmpeg spawn error: ${error.message}`);
+              reject(new Error(`FFmpeg spawn failed: ${error.message}`));
+            });
             
             // ✅ FIX: Đợi FFmpeg stdin ready trước khi lưu và tiếp tục
             console.log(`🔧 Waiting for FFmpeg stdin ready for room ${roomCode}...`);
@@ -189,7 +196,11 @@ class StreamingService {
                 let checkCount = 0;
                 const checkInterval = setInterval(() => {
                     checkCount++;
-                    console.log(`📋 Check ${checkCount}: Looking for playlist at ${playlistPath}`);
+                    
+                    // ✅ THÊM: Log chi tiết mỗi 5 lần check
+                    if (checkCount % 5 === 0) {
+                        console.log(`📋 Check #${checkCount}, exists: ${fs.existsSync(playlistPath)}`);
+                    }
                     
                     if (fs.existsSync(playlistPath)) {
                         clearInterval(checkInterval);

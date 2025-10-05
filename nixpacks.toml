@@ -5,7 +5,7 @@ nixPkgs = ["nodejs-18_x", "ffmpeg-full"]
 cmds = ["npm ci --only=production"]
 
 [phases.build]
-cmds = ["mkdir -p streams"]
+cmds = ["mkdir -p streams", "ffmpeg -version"]
 
 [start]
 cmd = "node server.js"

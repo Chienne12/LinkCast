@@ -834,7 +834,7 @@ wss.on('connection', (ws, req) => {
             binaryQueue.push(data);
             
             // ✅ Limit queue size to prevent memory overflow
-            if (binaryQueue.length > 50) {
+            if (binaryQueue.length > 100) {
               console.warn(`⚠️ Binary queue too large (${binaryQueue.length}), dropping oldest chunks`);
               binaryQueue.shift(); // Remove oldest chunk
             }
@@ -875,22 +875,6 @@ wss.on('connection', (ws, req) => {
       // Cleanup
       binaryQueue.length = 0;
       
-      if (roomCode) {
-        streamingService.stopStream(roomCode);
-      }
-    });
-    
-    return; // Exit early for stream upload connections
-    
-    ws.on('close', () => {
-      console.log(`🔌 Stream upload WebSocket closed for room ${roomCode}`);
-      if (roomCode) {
-        streamingService.stopStream(roomCode);
-      }
-    });
-    
-    ws.on('error', (error) => {
-      console.error('❌ Stream upload WebSocket error:', error);
       if (roomCode) {
         streamingService.stopStream(roomCode);
       }
