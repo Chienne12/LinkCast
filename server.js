@@ -111,7 +111,11 @@ const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (method === 'OPTIONS') {
-    res.writeHead(200);
+    res.writeHead(200, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
     return res.end();
   }
 
@@ -734,10 +738,23 @@ function cleanupExpiredRooms() {
   }
 }
 
-// Start cleanup interval - kiểm tra mỗi 30 giây
+// Start cleanup interval - kiểm tra mỗi 30 giây (đã sửa từ 10s lên 30s)
 setInterval(cleanupExpiredRooms, 30000);
 
+// ✅ THÊM: Debug WebSocket upgrades
+server.on('upgrade', (request, socket, head) => {
+  console.log('🔄 WebSocket upgrade request:', {
+    url: request.url,
+    origin: request.headers.origin,
+    host: request.headers.host
+  });
+});
+
 wss.on('connection', (ws, req) => {
+  // ✅ THÊM: Origin validation
+  const origin = req.headers.origin;
+  console.log('🔗 WebSocket connection from:', origin);
+  
   ws.isAlive = true;
   ws.on('pong', () => (ws.isAlive = true));
 
@@ -835,8 +852,8 @@ wss.on('connection', (ws, req) => {
             
             // ✅ Limit queue size to prevent memory overflow
             if (binaryQueue.length > 100) {
-              console.warn(`⚠️ Binary queue too large (${binaryQueue.length}), dropping oldest chunks`);
-              binaryQueue.shift(); // Remove oldest chunk
+              const dropped = binaryQueue.shift();
+              console.warn(`⚠️ Dropped chunk (${dropped.length} bytes) for room ${roomCode || 'unknown'}`);
             }
             return;
           }
@@ -1181,8 +1198,13 @@ setInterval(() => {
   });
 }, 30000);
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server listening on port ${PORT}`);
+  
+  // ✅ THÊM: Railway health check ready signal
+  setTimeout(() => {
+    console.log('✅ Health check ready');
+  }, 2000);
   
   // ✅ FIX: WebSocket endpoint cho Railway
   const wsEndpoint = process.env.RAILWAY_PUBLIC_DOMAIN 

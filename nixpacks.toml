@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs-18_x", "ffmpeg-full"]
+nixPkgs = ["nodejs-18_x", "ffmpeg"]
 
 [phases.install]
 cmds = ["npm ci --only=production"]
