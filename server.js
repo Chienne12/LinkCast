@@ -1064,9 +1064,32 @@ wss.on('connection', (ws, req) => {
       // Chuẩn hóa roomCode thành uppercase để nhất quán
       const normalizedRoomCode = roomCode.toUpperCase();
       
+      // ✅ THÊM: Debug tất cả rooms hiện tại
+      console.log(`🔍 Current rooms: ${Array.from(rooms.keys())}`);
+      console.log(`🔍 Creating room: ${normalizedRoomCode}`);
+      
       // Kiểm tra mã phòng đã tồn tại chưa
       if (rooms.has(normalizedRoomCode)) {
-        return send(ws, { type: 'error', message: 'Room code already exists' });
+        const existingRoom = rooms.get(normalizedRoomCode);
+        console.log(`❌ Room code already exists: ${normalizedRoomCode}`);
+        console.log(`❌ Existing room details:`, {
+          android: !!existingRoom.android,
+          web: !!existingRoom.web,
+          createdAt: new Date(existingRoom.createdAt).toISOString(),
+          expiresAt: new Date(existingRoom.expiresAt).toISOString(),
+          used: existingRoom.used
+        });
+        console.log(`❌ Current time: ${new Date().toISOString()}`);
+        console.log(`❌ Room expired: ${Date.now() > existingRoom.expiresAt}`);
+        
+        // ✅ THÊM: Cleanup room cũ nếu đã expired
+        if (Date.now() > existingRoom.expiresAt) {
+          console.log(`🧹 Cleaning up expired room: ${normalizedRoomCode}`);
+          rooms.delete(normalizedRoomCode);
+          console.log(`✅ Expired room cleaned up, proceeding with new room creation`);
+        } else {
+          return send(ws, { type: 'error', message: 'Room code already exists' });
+        }
       }
       
       // Tạo phòng mới
