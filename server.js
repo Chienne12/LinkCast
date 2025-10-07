@@ -1047,6 +1047,12 @@ wss.on('connection', (ws, req) => {
 
     const { type, roomCode, role } = msg;
     console.log(`📨 Received message: ${type}`, msg);
+    console.log(`📨 Connection details:`, {
+      url: req.url,
+      origin: req.headers.origin,
+      host: req.headers.host,
+      userAgent: req.headers['user-agent']
+    });
 
     // Tạo phòng mới (Web)
     if (type === 'create-room') {
@@ -1132,6 +1138,15 @@ wss.on('connection', (ws, req) => {
     // Hệ thống cũ - join với sessionId (backward compatibility)
     if (type === 'join') {
       const { sessionId, role } = msg;
+      console.log(`⚠️ Legacy join message received:`, {
+        sessionId: sessionId,
+        role: role,
+        url: req.url,
+        origin: req.headers.origin,
+        host: req.headers.host
+      });
+      console.log(`⚠️ This is likely from an old connection or cached WebSocket`);
+      
       if (!sessionId || !role || !['android', 'web'].includes(role)) {
         return send(ws, { type: 'error', message: 'join requires sessionId + role(android|web)' });
       }
