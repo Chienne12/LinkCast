@@ -855,7 +855,38 @@ wss.on('connection', (ws, req) => {
           console.log(`📨 Raw message:`, data);
           const msg = JSON.parse(data);
           console.log(`📨 Parsed message:`, msg);
+        } else {
+          // Binary data - log details
+          console.log(`📦 Binary data received: size=${data.length} bytes`);
+          console.log(`📦 First 20 bytes:`, data.slice(0, 20));
+          console.log(`📦 Data type:`, typeof data, 'Buffer:', Buffer.isBuffer(data));
           
+          // Check if it's actually a string disguised as binary
+          try {
+            const stringData = data.toString('utf8');
+            console.log(`📦 As string:`, stringData);
+            
+            // Try to parse as JSON
+            const jsonData = JSON.parse(stringData);
+            console.log(`📦 Parsed as JSON:`, jsonData);
+            
+            // Process as init message if it's JSON
+            if (jsonData.type === 'init') {
+              console.log(`🔧 Found init message in binary data:`, jsonData);
+              console.log(`🔧 This is likely from Web client, not Android`);
+              // Process init message here
+              roomCode = jsonData.roomCode;
+              console.log(`🔧 Stream init received: roomCode=${roomCode}`);
+            }
+          } catch (parseError) {
+            console.log(`📦 Not a string or JSON, treating as binary video data`);
+            console.log(`📦 This binary data is likely from Android app, not Web client`);
+          }
+        }
+        
+        // Process init message if found
+        if (typeof data === 'string') {
+          const msg = JSON.parse(data);
           if (msg.type === 'init') {
             roomCode = msg.roomCode;
             console.log(`🔧 Stream init received: roomCode=${roomCode}`);
@@ -936,10 +967,13 @@ wss.on('connection', (ws, req) => {
         } else {
           // Binary data - video chunks
           console.log(`📦 Binary data received: size=${data.length} bytes, isInitialized=${isInitialized}, roomCode=${roomCode}`);
+          console.log(`📦 WebSocket path: ${req.url}, origin: ${req.headers.origin}`);
+          console.log(`📦 First 10 bytes:`, Array.from(data.slice(0, 10)));
           
           // ✅ Queue binary data if not initialized yet
           if (!isInitialized || !roomCode) {
             console.log(`📦 Queueing binary chunk (not initialized yet), queue size: ${binaryQueue.length + 1}`);
+            console.log(`📦 This binary data is being queued because stream is not initialized`);
             binaryQueue.push(data);
             
             // ✅ Limit queue size to prevent memory overflow
