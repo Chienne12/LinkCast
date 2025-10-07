@@ -770,13 +770,20 @@ wss.on('connection', (ws, req) => {
     
     ws.on('message', async (data) => {
       try {
+        console.log(`📨 Stream WebSocket message received: type=${typeof data}, length=${data.length}`);
+        
         if (typeof data === 'string') {
           // JSON control message
+          console.log(`📨 Raw message:`, data);
           const msg = JSON.parse(data);
+          console.log(`📨 Parsed message:`, msg);
           
           if (msg.type === 'init') {
             roomCode = msg.roomCode;
             console.log(`🔧 Stream init received: roomCode=${roomCode}`);
+            console.log(`🔍 Full init message:`, JSON.stringify(msg, null, 2));
+            console.log(`🔍 WebSocket state:`, ws.readyState, 'OPEN =', WebSocket.OPEN);
+            console.log(`🔍 Current timestamp:`, Date.now());
             
             // Validate room code
             if (!roomCode || typeof roomCode !== 'string' || roomCode.length !== 6) {
@@ -806,9 +813,11 @@ wss.on('connection', (ws, req) => {
             ws.roomCode = normalizedRoomCode;
             
             console.log(`🎬 Starting FFmpeg for room ${roomCode}...`);
+            console.log(`🔍 Calling streamingService.startStreamFromStdin(${roomCode})...`);
             
             try {
               const playlistUrl = await streamingService.startStreamFromStdin(roomCode);
+              console.log(`✅ FFmpeg started successfully, playlistUrl: ${playlistUrl}`);
               
               // ✅ Mark as initialized BEFORE sending response
               isInitialized = true;
@@ -820,7 +829,9 @@ wss.on('connection', (ws, req) => {
                 roomCode: roomCode 
               };
               console.log(`📤 Sending stream-started:`, response);
+              console.log(`🔍 WebSocket readyState before send:`, ws.readyState);
               ws.send(JSON.stringify(response));
+              console.log(`✅ stream-started message sent successfully`);
               
               // ✅ Process queued binary data
               if (binaryQueue.length > 0) {
@@ -844,6 +855,7 @@ wss.on('connection', (ws, req) => {
           
         } else {
           // Binary data - video chunks
+          console.log(`📦 Binary data received: size=${data.length} bytes, isInitialized=${isInitialized}, roomCode=${roomCode}`);
           
           // ✅ Queue binary data if not initialized yet
           if (!isInitialized || !roomCode) {
