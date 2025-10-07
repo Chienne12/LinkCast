@@ -162,6 +162,78 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Init stream endpoint - HTTP alternative to WebSocket init
+  if (pathname === '/api/init-stream' && method === 'POST') {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk.toString();
+    });
+    
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body);
+        const { roomCode } = data;
+        
+        console.log(`🔧 HTTP Init stream received: roomCode=${roomCode}`);
+        console.log(`🔍 Full init data:`, JSON.stringify(data, null, 2));
+        
+        if (!roomCode || typeof roomCode !== 'string' || roomCode.length !== 6) {
+          console.log(`❌ Invalid room code format: ${roomCode}`);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            success: false,
+            error: MESSAGES.INVALID_ROOM_CODE_FORMAT
+          }));
+        }
+        
+        // Check room exists
+        const normalizedRoomCode = roomCode.toUpperCase();
+        console.log(`🔍 Checking room exists: ${normalizedRoomCode}, rooms: ${Array.from(rooms.keys())}`);
+        
+        if (!rooms.has(normalizedRoomCode)) {
+          console.log(`❌ Room not found: ${normalizedRoomCode}`);
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            success: false,
+            error: MESSAGES.ROOM_NOT_FOUND
+          }));
+        }
+        
+        console.log(`🎬 Starting FFmpeg for room ${normalizedRoomCode} via HTTP...`);
+        
+        try {
+          const playlistUrl = await streamingService.startStreamFromStdin(normalizedRoomCode);
+          console.log(`✅ FFmpeg started successfully via HTTP, playlistUrl: ${playlistUrl}`);
+          
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            roomCode: normalizedRoomCode,
+            playlistUrl: playlistUrl,
+            message: 'Stream initialized successfully'
+          }));
+          
+        } catch (error) {
+          console.error(`❌ Failed to start FFmpeg via HTTP:`, error);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: false,
+            error: error.message
+          }));
+        }
+        
+      } catch (error) {
+        console.error('❌ Error processing HTTP init stream:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: false,
+          error: 'Internal server error'
+        }));
+      }
+    });
+    return;
+  }
+
   // Server info endpoint
   if (pathname === '/api/server-info' && method === 'GET') {
     const wsEndpoint = process.env.RAILWAY_PUBLIC_DOMAIN 
