@@ -32,209 +32,256 @@ class StreamingService {
      * @returns {Promise<string>} - URL HLS playlist
      */
     async startStreamFromStdin(roomCode) {
-        try {
-            // Kiểm tra nếu stream đã tồn tại
-            if (this.activeStreams.has(roomCode)) {
-                console.log(`Stream ${roomCode} already exists`);
-                return this.getPlaylistUrl(roomCode);
-            }
+        // ✅ WRAP TOÀN BỘ LOGIC TRONG try-catch
+        return new Promise(async (resolve, reject) => {
+            try {
+                // Kiểm tra nếu stream đã tồn tại
+                if (this.activeStreams.has(roomCode)) {
+                    console.log(`Stream ${roomCode} already exists`);
+                    return resolve(this.getPlaylistUrl(roomCode));
+                }
 
-            // Tạo thư mục cho room
-            const roomDir = path.join(this.streamDir, roomCode);
-            if (!fs.existsSync(roomDir)) {
-                fs.mkdirSync(roomDir, { recursive: true });
-            }
+                // Tạo thư mục cho room
+                const roomDir = path.join(this.streamDir, roomCode);
+                if (!fs.existsSync(roomDir)) {
+                    fs.mkdirSync(roomDir, { recursive: true });
+                }
 
-            const playlistPath = path.join(roomDir, 'playlist.m3u8');
-            const segmentPattern = path.join(roomDir, 'segment_%03d.ts');
+                const playlistPath = path.join(roomDir, 'playlist.m3u8');
+                const segmentPattern = path.join(roomDir, 'segment_%03d.ts');
 
-            // FFmpeg command để convert WebM từ stdin sang HLS
-            const ffmpegArgs = [
-                '-i', 'pipe:0',               // Read from stdin
-                '-f', 'webm',                 // Input format từ MediaRecorder
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-preset', 'veryfast',        // Cân bằng giữa tốc độ và chất lượng
-                '-tune', 'zerolatency',       // Tối ưu cho streaming real-time
-                '-profile:v', 'baseline',     // Tương thích tốt với mobile
-                '-level', '3.0',              // Tương thích rộng
-                '-pix_fmt', 'yuv420p',        // Pixel format tương thích
-                '-g', '30',                   // GOP size = 30 frames
-                '-keyint_min', '30',          // Minimum keyframe interval
-                '-sc_threshold', '0',         // Disable scene change detection
-                '-b:v', '2000k',              // Tăng từ 1000k lên 2000k để giảm keyframe interval
-                '-maxrate', '2500k',          // Tăng từ 1200k lên 2500k
-                '-bufsize', '3000k',          // Tăng buffer size tương ứng
-                '-b:a', '128k',               // Audio bitrate 128kbps
-                '-ar', '44100',               // Audio sample rate
-                '-f', 'hls',
-                '-hls_time', '1',             // Giảm từ 2s xuống 1s để giảm latency
-                '-hls_list_size', '6',        // Giữ 6 segments (6 giây buffer thay vì 12s)
-                '-hls_flags', 'delete_segments+independent_segments',
-                '-hls_segment_type', 'mpegts',
-                '-hls_segment_filename', segmentPattern,
-                '-loglevel', 'info',          // Log level để debug
-                playlistPath
-            ];
+                // FFmpeg command để convert WebM từ stdin sang HLS
+                const ffmpegArgs = [
+                    '-i', 'pipe:0',               // Read from stdin
+                    '-f', 'webm',                 // Input format từ MediaRecorder
+                    '-c:v', 'libx264',
+                    '-c:a', 'aac',
+                    '-preset', 'ultrafast',       // Thay vì veryfast để spawn nhanh hơn
+                    '-tune', 'zerolatency',
+                    '-profile:v', 'baseline',
+                    '-level', '3.0',
+                    '-pix_fmt', 'yuv420p',
+                    '-g', '30',
+                    '-keyint_min', '30',
+                    '-sc_threshold', '0',
+                    '-b:v', '2000k',
+                    '-maxrate', '2500k',
+                    '-bufsize', '3000k',
+                    '-b:a', '128k',
+                    '-ar', '44100',
+                    '-f', 'hls',
+                    '-hls_time', '1',
+                    '-hls_list_size', '6',
+                    '-hls_flags', 'delete_segments+independent_segments',
+                    '-hls_segment_type', 'mpegts',
+                    '-hls_segment_filename', segmentPattern,
+                    '-loglevel', 'warning',       // Giảm log xuống warning để dễ debug
+                    playlistPath
+                ];
 
-            console.log(`Starting FFmpeg from stdin for room ${roomCode}:`, ffmpegArgs.join(' '));
+                console.log(`🎬 Spawning FFmpeg for room ${roomCode}...`);
 
-            const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-            console.log(`FFmpeg spawned, PID: ${ffmpeg.pid}`);
-            
-            // ✅ THÊM: FFmpeg spawn error handling
-            ffmpeg.on('error', (error) => {
-              console.error(`FFmpeg spawn error: ${error.message}`);
-              reject(new Error(`FFmpeg spawn failed: ${error.message}`));
-            });
-            
-            // ✅ FIX: Đợi FFmpeg stdin ready trước khi lưu và tiếp tục
-            console.log(`🔧 Waiting for FFmpeg stdin ready for room ${roomCode}...`);
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('FFmpeg stdin ready timeout'));
-                }, 3000); // 3 giây timeout cho stdin ready
+                let ffmpeg;
+                let spawnErrorOccurred = false;
                 
-                // Check if stdin is immediately writable
-                if (ffmpeg.stdin && ffmpeg.stdin.writable) {
-                    console.log(`✅ FFmpeg stdin immediately ready for room ${roomCode}`);
-                    clearTimeout(timeout);
-                    resolve();
-                } else {
-                    // Wait for stdin to become writable
-                    const checkStdin = () => {
-                        if (ffmpeg.stdin && ffmpeg.stdin.writable) {
-                            console.log(`✅ FFmpeg stdin ready for room ${roomCode}`);
-                            clearTimeout(timeout);
-                            resolve();
-                        } else {
-                            // Check again in 50ms
-                            setTimeout(checkStdin, 50);
+                try {
+                    ffmpeg = spawn('ffmpeg', ffmpegArgs);
+                    
+                    // ✅ THÊM: Check PID ngay sau spawn
+                    if (!ffmpeg.pid) {
+                        console.error(`❌ FFmpeg spawn failed - no PID assigned`);
+                        return reject(new Error('FFmpeg spawn failed - no PID assigned'));
+                    }
+                    
+                    console.log(`✅ FFmpeg spawned successfully, PID: ${ffmpeg.pid}`);
+                } catch (spawnError) {
+                    console.error(`❌ FFmpeg spawn failed:`, spawnError);
+                    return reject(new Error(`FFmpeg spawn failed: ${spawnError.message}`));
+                }
+                
+                // ✅ THÊM: Global error handler cho FFmpeg process
+                ffmpeg.on('error', (error) => {
+                    if (!spawnErrorOccurred) {
+                        spawnErrorOccurred = true;
+                        console.error(`💥 FFmpeg process error for ${roomCode}:`, error.message);
+                        this.activeStreams.delete(roomCode);
+                        this.stdinProcesses.delete(roomCode);
+                        reject(new Error(`FFmpeg process error: ${error.message}`));
+                    }
+                });
+                
+                // ✅ THÊM: Timeout để detect FFmpeg không khởi động được
+                const spawnTimeout = setTimeout(() => {
+                    if (!spawnErrorOccurred) {
+                        spawnErrorOccurred = true;
+                        console.error(`❌ FFmpeg spawn timeout - process may not have started`);
+                        if (ffmpeg && !ffmpeg.killed) {
+                            ffmpeg.kill('SIGKILL');
                         }
-                    };
-                    checkStdin();
-                }
-            });
-            
-            // Lưu stdin stream SAU KHI đã ready
-            this.stdinProcesses.set(roomCode, ffmpeg.stdin);
-            
-            ffmpeg.stdout.on('data', (data) => {
-                console.log(`FFmpeg ${roomCode} stdout:`, data.toString());
-            });
-
-            ffmpeg.stderr.on('data', (data) => {
-                const output = data.toString();
-                // Chỉ log những thông tin quan trọng, không spam console
-                if (output.includes('error') || output.includes('Error') || 
-                    output.includes('failed') || output.includes('Failed')) {
-                    console.error(`❌ FFmpeg ${roomCode} error:`, output.trim());
-                } else if (output.includes('frame=') || output.includes('time=')) {
-                    // Log progress mỗi 10 giây thay vì random
-                    const now = Date.now();
-                    const lastLog = this.lastProgressLog.get(roomCode) || 0;
-                    if (now - lastLog > 10000) { // 10 giây
-                        console.log(`📊 FFmpeg ${roomCode} progress:`, output.trim().split('\n')[0]);
-                        this.lastProgressLog.set(roomCode, now);
+                        reject(new Error('FFmpeg spawn timeout - process may not have started'));
                     }
-                } else {
-                    console.log(`🔧 FFmpeg ${roomCode}:`, output.trim());
-                }
-            });
-
-            ffmpeg.on('close', (code) => {
-                console.log(`🏁 FFmpeg ${roomCode} exited with code ${code}`);
-                this.activeStreams.delete(roomCode);
-                this.stdinProcesses.delete(roomCode);
-                this.lastProgressLog.delete(roomCode);
+                }, 5000); // 5 giây timeout cho spawn
                 
-                // Chỉ cleanup nếu exit code không phải 0 (lỗi) hoặc SIGTERM (dừng bình thường)
-                if (code !== 0 && code !== null) {
-                    console.error(`❌ FFmpeg ${roomCode} exited with error code ${code}`);
-                }
-                
-                // Delay cleanup để client có thể tải segment cuối
-                setTimeout(() => {
-                    this.cleanupRoom(roomCode);
-                }, 30000); // 30 giây
-            });
+                // ✅ FIX: Đợi FFmpeg stdin ready với timeout dài hơn
+                console.log(`🔧 Waiting for FFmpeg stdin ready for room ${roomCode}...`);
+                try {
+                    await new Promise((resolveStdin, rejectStdin) => {
+                        const stdinTimeout = setTimeout(() => {
+                            if (!spawnErrorOccurred) {
+                                rejectStdin(new Error('FFmpeg stdin ready timeout after 10 seconds'));
+                            }
+                        }, 10000); // ✅ TĂNG lên 10 giây cho Railway
 
-            ffmpeg.on('error', (error) => {
-                console.error(`💥 FFmpeg ${roomCode} process error:`, error.message);
-                this.activeStreams.delete(roomCode);
-                this.stdinProcesses.delete(roomCode);
-                this.lastProgressLog.delete(roomCode);
-                
-                // Cleanup ngay lập tức khi có lỗi process
-                setTimeout(() => {
-                    this.cleanupRoom(roomCode);
-                }, 2000);
-            });
-
-            // Lưu process
-            this.activeStreams.set(roomCode, ffmpeg);
-
-            // Đợi FFmpeg khởi tạo hoàn tất sau khi stdin ready
-            console.log(`🔧 FFmpeg stdin ready, waiting for process initialization for room ${roomCode}...`);
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    console.log(`✅ FFmpeg process initialization completed for room ${roomCode}`);
-                    resolve();
-                }, 1000); // Giảm xuống 1 giây vì stdin đã ready
-
-                // Cleanup timeout
-                const originalResolve = resolve;
-                resolve = () => {
-                    clearTimeout(timeout);
-                    originalResolve();
-                };
-            });
-
-            // Đợi playlist được tạo và notify clients
-            console.log(`🔍 Waiting for playlist creation at: ${playlistPath}`);
-            await new Promise((resolve, reject) => {
-                let checkCount = 0;
-                const checkInterval = setInterval(() => {
-                    checkCount++;
-                    
-                    // ✅ THÊM: Log chi tiết mỗi 5 lần check
-                    if (checkCount % 5 === 0) {
-                        console.log(`📋 Check #${checkCount}, exists: ${fs.existsSync(playlistPath)}`);
+                        // Check if stdin is immediately writable
+                        if (ffmpeg.stdin && ffmpeg.stdin.writable) {
+                            console.log(`✅ FFmpeg stdin immediately ready for room ${roomCode}`);
+                            clearTimeout(stdinTimeout);
+                            clearTimeout(spawnTimeout); // ✅ Clear spawn timeout
+                            resolveStdin();
+                        } else {
+                            // Wait for stdin to become writable
+                            let checkCount = 0;
+                            const checkStdin = () => {
+                                checkCount++;
+                                if (ffmpeg.stdin && ffmpeg.stdin.writable) {
+                                    console.log(`✅ FFmpeg stdin ready after ${checkCount} checks for room ${roomCode}`);
+                                    clearTimeout(stdinTimeout);
+                                    clearTimeout(spawnTimeout); // ✅ Clear spawn timeout
+                                    resolveStdin();
+                                } else if (checkCount < 200) { // Max 200 checks (10 seconds / 50ms)
+                                    setTimeout(checkStdin, 50);
+                                } else {
+                                    clearTimeout(stdinTimeout);
+                                    rejectStdin(new Error('FFmpeg stdin never became writable'));
+                                }
+                            };
+                            checkStdin();
+                        }
+                    });
+                } catch (stdinError) {
+                    console.error(`❌ stdin ready failed:`, stdinError);
+                    clearTimeout(spawnTimeout); // ✅ Clear spawn timeout
+                    if (ffmpeg && !ffmpeg.killed) {
+                        ffmpeg.kill('SIGKILL');
                     }
-                    
-                    if (fs.existsSync(playlistPath)) {
-                        clearInterval(checkInterval);
-                        
-                        // Notify clients qua HTTP endpoint
-                        const serverAddress = process.env.DOMAIN || `http://localhost:${process.env.PORT || 8080}`;
-                        const hlsUrl = `${serverAddress}/streams/${roomCode}/playlist.m3u8`;
-                        const watchUrl = `${serverAddress}/watch/${roomCode}`;
-                        
-                        console.log(`📺 HLS playlist ready for room ${roomCode}: ${hlsUrl}`);
-                        
-                        // Gửi notification đến server endpoint bằng http.request()
-                        this.notifyStreamReady(serverAddress, roomCode, hlsUrl, watchUrl);
-                        
-                        // ✅ THÊM: Notify Web Client qua WebSocket
-                        this.notifyWebClientStreamReady(roomCode, hlsUrl, watchUrl);
-                        
-                        resolve();
+                    return reject(stdinError);
+                }
+
+                // ✅ Lưu stdin stream SAU KHI đã ready
+                this.stdinProcesses.set(roomCode, ffmpeg.stdin);
+                console.log(`✅ stdin process registered for room ${roomCode}`);
+
+                // Setup FFmpeg output handlers
+                ffmpeg.stdout.on('data', (data) => {
+                    const output = data.toString();
+                    if (output.trim()) {
+                        console.log(`FFmpeg ${roomCode} stdout:`, output.trim());
                     }
-                }, 200); // Giảm interval xuống 200ms để check nhanh hơn
-                
-                setTimeout(() => {
-                    clearInterval(checkInterval);
-                    console.error(`❌ Playlist timeout after ${checkCount} checks for room ${roomCode}`);
-                    reject(new Error('Playlist timeout'));
-                }, 10000); // Giảm timeout xuống 10 giây
-            });
+                });
 
-            return this.getPlaylistUrl(roomCode);
+                ffmpeg.stderr.on('data', (data) => {
+                    const output = data.toString();
+                    // Chỉ log những thông tin quan trọng
+                    if (output.includes('error') || output.includes('Error') || 
+                        output.includes('failed') || output.includes('Failed')) {
+                        console.error(`❌ FFmpeg ${roomCode} error:`, output.trim());
+                    } else if (output.includes('frame=') || output.includes('time=')) {
+                        // Log progress mỗi 10 giây
+                        const now = Date.now();
+                        const lastLog = this.lastProgressLog.get(roomCode) || 0;
+                        if (now - lastLog > 10000) {
+                            console.log(`📊 FFmpeg ${roomCode} progress:`, output.trim().split('\n')[0]);
+                            this.lastProgressLog.set(roomCode, now);
+                        }
+                    } else if (output.trim()) {
+                        console.log(`🔧 FFmpeg ${roomCode}:`, output.trim());
+                    }
+                });
 
-        } catch (error) {
-            console.error(`Error starting stdin stream for ${roomCode}:`, error);
-            throw error;
-        }
+                ffmpeg.on('close', (code) => {
+                    console.log(`🏁 FFmpeg ${roomCode} exited with code ${code}`);
+                    this.activeStreams.delete(roomCode);
+                    this.stdinProcesses.delete(roomCode);
+                    this.lastProgressLog.delete(roomCode);
+
+                    if (code !== 0 && code !== null) {
+                        console.error(`❌ FFmpeg ${roomCode} exited with error code ${code}`);
+                    }
+
+                    setTimeout(() => {
+                        this.cleanupRoom(roomCode);
+                    }, 30000);
+                });
+
+                // Lưu process
+                this.activeStreams.set(roomCode, ffmpeg);
+                console.log(`✅ FFmpeg process registered for room ${roomCode}`);
+
+                // ✅ GIẢM thời gian chờ initialization xuống
+                console.log(`⏳ Waiting 500ms for FFmpeg initialization...`);
+                await new Promise(resolveInit => setTimeout(resolveInit, 500));
+
+                // ✅ Đợi playlist được tạo với timeout dài hơn
+                console.log(`🔍 Waiting for playlist creation at: ${playlistPath}`);
+                try {
+                    await new Promise((resolvePlaylist, rejectPlaylist) => {
+                        let checkCount = 0;
+                        const checkInterval = setInterval(() => {
+                            checkCount++;
+
+                            if (checkCount % 10 === 0) {
+                                console.log(`📋 Check #${checkCount}, exists: ${fs.existsSync(playlistPath)}`);
+                            }
+
+                            if (fs.existsSync(playlistPath)) {
+                                clearInterval(checkInterval);
+
+                                // Get dynamic server address
+                                const serverAddress = process.env.DOMAIN || 
+                                                    `http://localhost:${process.env.PORT || 8080}`;
+                                const hlsUrl = `${serverAddress}/streams/${roomCode}/playlist.m3u8`;
+                                const watchUrl = `${serverAddress}/watch/${roomCode}`;
+
+                                console.log(`📺 HLS playlist ready for room ${roomCode}: ${hlsUrl}`);
+
+                                // Notify via HTTP
+                                this.notifyStreamReady(serverAddress, roomCode, hlsUrl, watchUrl);
+
+                                // ✅ Notify Web Client qua WebSocket
+                                this.notifyWebClientStreamReady(roomCode, hlsUrl, watchUrl);
+
+                                resolvePlaylist();
+                            }
+                        }, 200); // Check mỗi 200ms
+
+                        // ✅ TĂNG timeout lên 15 giây cho Railway
+                        setTimeout(() => {
+                            clearInterval(checkInterval);
+                            console.error(`❌ Playlist timeout after ${checkCount} checks for room ${roomCode}`);
+                            rejectPlaylist(new Error('Playlist creation timeout after 15 seconds'));
+                        }, 15000);
+                    });
+                } catch (playlistError) {
+                    console.error(`❌ Playlist creation failed:`, playlistError);
+                    // Cleanup FFmpeg
+                    if (ffmpeg && !ffmpeg.killed) {
+                        ffmpeg.kill('SIGTERM');
+                    }
+                    this.activeStreams.delete(roomCode);
+                    this.stdinProcesses.delete(roomCode);
+                    return reject(playlistError);
+                }
+
+                // ✅ SUCCESS - resolve với playlist URL
+                const playlistUrl = this.getPlaylistUrl(roomCode);
+                console.log(`✅ Stream started successfully for room ${roomCode}: ${playlistUrl}`);
+                resolve(playlistUrl);
+
+            } catch (error) {
+                console.error(`❌ Error in startStreamFromStdin for ${roomCode}:`, error);
+                reject(error);
+            }
+        });
     }
 
     /**
