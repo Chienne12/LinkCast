@@ -54,6 +54,9 @@ const MESSAGES = {
 // Room management system với mã bảo mật
 const rooms = new Map(); // roomCode -> { android: WebSocket|null, web: WebSocket|null, createdAt: number, expiresAt: number, used: boolean }
 
+// ✅ THÊM: Debounce để tránh tạo room trùng lặp
+const roomCreationInProgress = new Set(); // Set of roomCodes being created
+
 // Initialize streaming service with rooms reference
 const streamingService = new StreamingService(rooms);
 const roomCleanupInterval = 30000; // 30 giây
@@ -790,6 +793,12 @@ function cleanup(ws) {
   if (!room.android && !room.web) {
     rooms.delete(ws.roomCode);
   }
+  
+  // ✅ THÊM: Cleanup progress flag when WebSocket disconnects
+  if (ws.roomCode) {
+    roomCreationInProgress.delete(ws.roomCode);
+    console.log(`🧹 Cleaned up room creation progress for: ${ws.roomCode}`);
+  }
 }
 
 // Cleanup expired rooms - chỉ xóa room khi không có client active
@@ -807,6 +816,20 @@ function cleanupExpiredRooms() {
       console.log(`⏰ Room ${roomCode} expired but has active clients, extending timeout`);
       room.expiresAt = now + 60000; // Extend thêm 60 giây
     }
+  }
+  
+  // ✅ THÊM: Cleanup stale progress flags (older than 30 seconds)
+  const staleProgress = [];
+  for (const roomCode of roomCreationInProgress) {
+    const room = rooms.get(roomCode);
+    if (!room || (now - room.createdAt) > 30000) {
+      staleProgress.push(roomCode);
+    }
+  }
+  
+  for (const roomCode of staleProgress) {
+    roomCreationInProgress.delete(roomCode);
+    console.log(`🧹 Cleaned up stale room creation progress for: ${roomCode}`);
   }
 }
 
@@ -1068,6 +1091,16 @@ wss.on('connection', (ws, req) => {
       console.log(`🔍 Current rooms: ${Array.from(rooms.keys())}`);
       console.log(`🔍 Creating room: ${normalizedRoomCode}`);
       
+      // ✅ THÊM: Check if room creation is already in progress
+      if (roomCreationInProgress.has(normalizedRoomCode)) {
+        console.log(`⚠️ Room creation already in progress for: ${normalizedRoomCode}`);
+        return send(ws, { type: 'error', message: 'Room creation already in progress' });
+      }
+      
+      // ✅ THÊM: Mark room creation as in progress
+      roomCreationInProgress.add(normalizedRoomCode);
+      console.log(`🚀 Starting room creation for: ${normalizedRoomCode}`);
+      
       // Kiểm tra mã phòng đã tồn tại chưa
       if (rooms.has(normalizedRoomCode)) {
         const existingRoom = rooms.get(normalizedRoomCode);
@@ -1088,6 +1121,8 @@ wss.on('connection', (ws, req) => {
           rooms.delete(normalizedRoomCode);
           console.log(`✅ Expired room cleaned up, proceeding with new room creation`);
         } else {
+          // ✅ THÊM: Remove from progress set on error
+          roomCreationInProgress.delete(normalizedRoomCode);
           return send(ws, { type: 'error', message: 'Room code already exists' });
         }
       }
@@ -1103,6 +1138,10 @@ wss.on('connection', (ws, req) => {
       
       ws.roomCode = normalizedRoomCode;
       ws.role = 'web';
+      
+      // ✅ THÊM: Remove from progress set after successful creation
+      roomCreationInProgress.delete(normalizedRoomCode);
+      console.log(`✅ Room creation completed for: ${normalizedRoomCode}`);
       
       send(ws, { type: 'room-created', roomCode: normalizedRoomCode });
       console.log(`Room created: ${normalizedRoomCode} by web client`);
