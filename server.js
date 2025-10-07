@@ -720,20 +720,20 @@ function cleanup(ws) {
   }
 }
 
-// Cleanup expired rooms - kiểm tra mỗi 10 giây cho mã 20 giây
+// Cleanup expired rooms - chỉ xóa room khi không có client active
 function cleanupExpiredRooms() {
   const now = Date.now();
   for (const [roomCode, room] of rooms.entries()) {
-    if (now > room.expiresAt) {
-      console.log(`🗑️ Room ${roomCode} expired after 20 seconds, cleaning up`);
-      // Thông báo cho các client về việc phòng hết hạn
-      if (room.android) {
-        send(room.android, { type: 'room-expired', roomCode });
-      }
-      if (room.web) {
-        send(room.web, { type: 'room-expired', roomCode });
-      }
+    // ✅ CHỈ xóa room nếu:
+    // 1. Room đã expired VÀ
+    // 2. Không có client nào connected (android = null, web = null)
+    if (now > room.expiresAt && !room.android && !room.web) {
+      console.log(`🗑️ Room ${roomCode} expired and no clients connected, cleaning up`);
       rooms.delete(roomCode);
+    } else if (now > room.expiresAt && (room.android || room.web)) {
+      // ✅ Room expired nhưng vẫn có client - extend thời gian
+      console.log(`⏰ Room ${roomCode} expired but has active clients, extending timeout`);
+      room.expiresAt = now + 60000; // Extend thêm 60 giây
     }
   }
 }
@@ -981,6 +981,10 @@ wss.on('connection', (ws, req) => {
       ws.roomCode = normalizedRoomCode;
       ws.role = 'android';
       
+      // ✅ THÊM: Extend room timeout khi có client join
+      room.expiresAt = Date.now() + 300000; // 5 phút thay vì 20 giây
+      console.log(`⏰ Room ${normalizedRoomCode} timeout extended to 5 minutes`);
+      
       // Thông báo cho cả 2 client (trả về roomCode như phía web nhập để hiển thị, nhưng logic nội bộ dùng normalized)
       send(ws, { type: 'room-joined', roomCode: normalizedRoomCode, peerReady: true });
       send(room.web, { type: 'peer-joined', roomCode: normalizedRoomCode, role: 'android' });
@@ -1042,6 +1046,14 @@ wss.on('connection', (ws, req) => {
       if (!ws.roomCode || !ws.role) {
         return send(ws, { type: 'error', message: 'not joined to room yet' });
       }
+      
+      // ✅ THÊM: Extend room timeout khi có WebRTC activity
+      const room = rooms.get(ws.roomCode);
+      if (room) {
+        room.expiresAt = Date.now() + 300000; // 5 phút
+        console.log(`⏰ Room ${ws.roomCode} timeout extended due to WebRTC activity`);
+      }
+      
       const peer = getPeer(ws.roomCode, ws.role);
       if (!peer) {
         return send(ws, { type: 'error', message: 'peer not available' });
