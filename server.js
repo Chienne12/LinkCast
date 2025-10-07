@@ -767,6 +767,12 @@ wss.on('connection', (ws, req) => {
     const binaryQueue = []; // Queue để lưu binary data khi chưa init
     
     console.log(MESSAGES.STREAM_UPLOAD_CONNECTED);
+    console.log('🔍 WebSocket connection details:', {
+      url: req.url,
+      origin: req.headers.origin,
+      host: req.headers.host,
+      userAgent: req.headers['user-agent']
+    });
     
     ws.on('message', async (data) => {
       try {
@@ -814,6 +820,8 @@ wss.on('connection', (ws, req) => {
             
             console.log(`🎬 Starting FFmpeg for room ${roomCode}...`);
             console.log(`🔍 Calling streamingService.startStreamFromStdin(${roomCode})...`);
+            console.log(`🔍 Room exists check: ${rooms.has(roomCode)}`);
+            console.log(`🔍 Available rooms: ${Array.from(rooms.keys())}`);
             
             try {
               const playlistUrl = await streamingService.startStreamFromStdin(roomCode);
@@ -887,8 +895,12 @@ wss.on('connection', (ws, req) => {
       }
     });
     
-    ws.on('close', () => {
-      console.log(`🔌 Stream WebSocket closed for room ${roomCode}`);
+    ws.on('close', (code, reason) => {
+      console.log(`🔌 Stream WebSocket closed for room ${roomCode}:`, {
+        code: code,
+        reason: reason,
+        wasClean: code === 1000
+      });
       
       // Cleanup
       binaryQueue.length = 0;
@@ -900,6 +912,12 @@ wss.on('connection', (ws, req) => {
     
     ws.on('error', (error) => {
       console.error('❌ Stream WebSocket error:', error);
+      console.error('❌ Error details:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        syscall: error.syscall
+      });
       
       // Cleanup
       binaryQueue.length = 0;
