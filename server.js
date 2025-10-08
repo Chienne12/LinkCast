@@ -918,6 +918,32 @@ wss.on('connection', (ws, req) => {
           console.log(`✅ Expired room cleaned up, proceeding with new room creation`);
           schedulePersistRooms();
         } else {
+          const existingSocket = existingRoom.web;
+          if (!existingSocket || existingSocket.readyState !== WebSocket.OPEN) {
+            console.log(`♻️ Rebinding stale web socket for room ${normalizedRoomCode}`);
+            rooms.set(normalizedRoomCode, {
+              android: existingRoom.android,
+              web: ws,
+              createdAt: existingRoom.createdAt,
+              expiresAt: Date.now() + 300000,
+              used: existingRoom.used
+            });
+            ws.roomCode = normalizedRoomCode;
+            ws.role = 'web';
+            roomCreationInProgress.delete(normalizedRoomCode);
+            schedulePersistRooms();
+            send(ws, { type: 'room-created', roomCode: normalizedRoomCode });
+            console.log(`✅ Room ${normalizedRoomCode} re-bound to new web client`);
+            return;
+          }
+
+          if (existingSocket === ws) {
+            console.log(`ℹ️ Duplicate create-room request from same WebSocket for ${normalizedRoomCode}`);
+            roomCreationInProgress.delete(normalizedRoomCode);
+            send(ws, { type: 'room-created', roomCode: normalizedRoomCode });
+            return;
+          }
+
           // ✅ THÊM: Remove from progress set on error
           roomCreationInProgress.delete(normalizedRoomCode);
           return send(ws, { type: 'error', message: 'Room code already exists' });
