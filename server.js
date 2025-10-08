@@ -5,10 +5,24 @@ const path = require('path');
 const fs = require('fs');
 const PORT = process.env.PORT || 8080;
 
+function normalizeBaseUrl(value, fallbackPath = '') {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\/$/, '') + fallbackPath;
+  }
+  return `https://${trimmed.replace(/\/$/, '')}${fallbackPath}`;
+}
+
 const STREAM_CONFIG = {
   rtmpBase: process.env.RTMP_BASE_URL || 'rtmp://localhost/live',
   hlsBase: process.env.HLS_BASE_URL || 'http://localhost:8080/live',
-  viewerPageBase: process.env.VIEWER_BASE_URL || 'https://linkcast.app/watch'
+  viewerPageBase:
+    normalizeBaseUrl(process.env.VIEWER_BASE_URL) ||
+    normalizeBaseUrl(process.env.DOMAIN, '/watch') ||
+    normalizeBaseUrl(process.env.RAILWAY_PUBLIC_DOMAIN, '/watch') ||
+    ''
 };
 
 const roomStorePath = path.join(__dirname, 'active-rooms.json');
@@ -73,8 +87,16 @@ function composeRtmpUrl(roomCode) {
 }
 
 function composeViewerUrl(roomCode) {
-  const base = STREAM_CONFIG.viewerPageBase.replace(/\/$/, '');
-  return `${base}/${roomCode}`;
+  const normalized = normalizeRoomCode(roomCode);
+  if (STREAM_CONFIG.viewerPageBase) {
+    const base = STREAM_CONFIG.viewerPageBase.replace(/\/$/, '');
+    return `${base}/${normalized}`;
+  }
+  const baseAddress = process.env.DOMAIN
+    || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '')
+    || getServerAddress();
+  const cleanBase = baseAddress.replace(/\/$/, '');
+  return `${cleanBase}/watch/${normalized}`;
 }
 
 function incrementViewer(roomCode) {
