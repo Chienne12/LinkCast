@@ -11,7 +11,7 @@ const STREAM_CONFIG = {
   viewerPageBase: process.env.VIEWER_BASE_URL || 'https://linkcast.app/watch'
 };
 
-const roomStorePath = path.join(__dirname, 'streams', 'active-rooms.json');
+const roomStorePath = path.join(__dirname, 'active-rooms.json');
 let roomStoreWriteTimer = null;
 
 function ensureRoomStoreFile() {
