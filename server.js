@@ -3,8 +3,92 @@ const WebSocket = require('ws');
 const url = require('url');
 const path = require('path');
 const fs = require('fs');
-const StreamingService = require('./streaming-service');
 const PORT = process.env.PORT || 8080;
+
+const STREAM_CONFIG = {
+  rtmpBase: process.env.RTMP_BASE_URL || 'rtmp://localhost/live',
+  hlsBase: process.env.HLS_BASE_URL || 'http://localhost:8080/live',
+  viewerPageBase: process.env.VIEWER_BASE_URL || 'https://linkcast.app/watch'
+};
+
+const roomStorePath = path.join(__dirname, 'streams', 'active-rooms.json');
+let roomStoreWriteTimer = null;
+
+function ensureRoomStoreFile() {
+  try {
+    fs.mkdirSync(path.dirname(roomStorePath), { recursive: true });
+    if (!fs.existsSync(roomStorePath)) {
+      fs.writeFileSync(roomStorePath, '[]', 'utf-8');
+    }
+  } catch (error) {
+    console.error('Không thể chuẩn bị file lưu mã phòng:', error.message);
+  }
+}
+
+function schedulePersistRooms() {
+  if (roomStoreWriteTimer) return;
+  roomStoreWriteTimer = setTimeout(() => {
+    roomStoreWriteTimer = null;
+    persistActiveRooms();
+  }, 100);
+}
+
+function persistActiveRooms() {
+  try {
+    const snapshot = Array.from(rooms.entries()).map(([roomCode, room]) => ({
+      roomCode,
+      createdAt: new Date(room.createdAt).toISOString(),
+      expiresAt: new Date(room.expiresAt).toISOString(),
+      hasAndroid: Boolean(room.android),
+      hasWeb: Boolean(room.web),
+      used: Boolean(room.used)
+    }));
+
+    fs.writeFile(roomStorePath, JSON.stringify(snapshot, null, 2), (err) => {
+      if (err) {
+        console.error('Không thể ghi file lưu mã phòng:', err.message);
+      }
+    });
+  } catch (error) {
+    console.error('Lỗi khi lưu danh sách phòng:', error.message);
+  }
+}
+
+ensureRoomStoreFile();
+
+const viewerStats = new Map(); // roomCode -> count
+
+function normalizeRoomCode(code) {
+  return (code || '').toString().trim().toUpperCase();
+}
+
+function composeHlsUrl(roomCode) {
+  const base = STREAM_CONFIG.hlsBase.replace(/\/$/, '');
+  return `${base}/${roomCode}.m3u8`;
+}
+
+function composeRtmpUrl(roomCode) {
+  const base = STREAM_CONFIG.rtmpBase.replace(/\/$/, '');
+  return `${base}/${roomCode}`;
+}
+
+function composeViewerUrl(roomCode) {
+  const base = STREAM_CONFIG.viewerPageBase.replace(/\/$/, '');
+  return `${base}/${roomCode}`;
+}
+
+function incrementViewer(roomCode) {
+  const current = viewerStats.get(roomCode) || 0;
+  viewerStats.set(roomCode, current + 1);
+  return current + 1;
+}
+
+function decrementViewer(roomCode) {
+  const current = viewerStats.get(roomCode) || 0;
+  const next = Math.max(0, current - 1);
+  viewerStats.set(roomCode, next);
+  return next;
+}
 
 // ✅ MESSAGES CONSTANTS
 const MESSAGES = {
@@ -53,12 +137,11 @@ const MESSAGES = {
 
 // Room management system với mã bảo mật
 const rooms = new Map(); // roomCode -> { android: WebSocket|null, web: WebSocket|null, createdAt: number, expiresAt: number, used: boolean }
+persistActiveRooms();
 
 // ✅ THÊM: Debounce để tránh tạo room trùng lặp
 const roomCreationInProgress = new Set(); // Set of roomCodes being created
 
-// Initialize streaming service with rooms reference
-const streamingService = new StreamingService(rooms);
 const roomCleanupInterval = 30000; // 30 giây
 
 // Get server IP address for cross-device access
@@ -172,66 +255,29 @@ const server = http.createServer((req, res) => {
       body += chunk.toString();
     });
     
-    req.on('end', async () => {
+    req.on('end', () => {
       try {
         const data = JSON.parse(body);
-        const { roomCode } = data;
-        
-        console.log(`🔧 HTTP Init stream received: roomCode=${roomCode}`);
-        console.log(`🔍 Full init data:`, JSON.stringify(data, null, 2));
-        
-        if (!roomCode || typeof roomCode !== 'string' || roomCode.length !== 6) {
-          console.log(`❌ Invalid room code format: ${roomCode}`);
+        const normalized = normalizeRoomCode(data.roomCode);
+        if (!normalized) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({
-            success: false,
-            error: MESSAGES.INVALID_ROOM_CODE_FORMAT
-          }));
+          return res.end(JSON.stringify({ success: false, error: MESSAGES.MISSING_ROOM_CODE }));
         }
-        
-        // Check room exists
-        const normalizedRoomCode = roomCode.toUpperCase();
-        console.log(`🔍 Checking room exists: ${normalizedRoomCode}, rooms: ${Array.from(rooms.keys())}`);
-        
-        if (!rooms.has(normalizedRoomCode)) {
-          console.log(`❌ Room not found: ${normalizedRoomCode}`);
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({
-            success: false,
-            error: MESSAGES.ROOM_NOT_FOUND
-          }));
-        }
-        
-        console.log(`🎬 Starting FFmpeg for room ${normalizedRoomCode} via HTTP...`);
-        
-        try {
-          const playlistUrl = await streamingService.startStreamFromStdin(normalizedRoomCode);
-          console.log(`✅ FFmpeg started successfully via HTTP, playlistUrl: ${playlistUrl}`);
-          
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            success: true,
-            roomCode: normalizedRoomCode,
-            playlistUrl: playlistUrl,
-            message: 'Stream initialized successfully'
-          }));
-          
-        } catch (error) {
-          console.error(`❌ Failed to start FFmpeg via HTTP:`, error);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            success: false,
-            error: error.message
-          }));
-        }
-        
+
+        const hlsUrl = composeHlsUrl(normalized);
+        const rtmpUrl = composeRtmpUrl(normalized);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          roomCode: normalized,
+          playlistUrl: hlsUrl,
+          rtmpUrl
+        }));
       } catch (error) {
         console.error('❌ Error processing HTTP init stream:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          success: false,
-          error: 'Internal server error'
-        }));
+        res.end(JSON.stringify({ success: false, error: 'Internal server error' }));
       }
     });
     return;
@@ -329,27 +375,27 @@ const server = http.createServer((req, res) => {
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);
-        const { roomCode, inputUrl } = data;
-        
-        if (!roomCode || !inputUrl) {
+        const normalized = normalizeRoomCode(data.roomCode);
+        if (!normalized) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE_OR_INPUT_URL }));
+          return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
         }
 
-        const hlsUrl = await streamingService.startStream(roomCode, inputUrl);
-        const watchUrl = streamingService.getViewerUrl(roomCode);
+        const hlsUrl = composeHlsUrl(normalized);
+        const watchUrl = composeViewerUrl(normalized);
+        const rtmpUrl = composeRtmpUrl(normalized);
 
-        console.log(`🎬 Started streaming for room ${roomCode}`);
-        console.log(`   Input: ${inputUrl}`);
-        console.log(`   HLS: ${hlsUrl}`);
-        console.log(`   Watch: ${watchUrl}`);
+        console.log(`🎬 Start-stream requested for room ${normalized}`);
+        console.log(`   RTMP ingest: ${rtmpUrl}`);
+        console.log(`   HLS playback: ${hlsUrl}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-          success: true, 
-          roomCode,
+        res.end(JSON.stringify({
+          success: true,
+          roomCode: normalized,
           hlsUrl,
-          watchUrl
+          watchUrl,
+          rtmpUrl
         }));
 
       } catch (error) {
@@ -371,20 +417,16 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
-        const { roomCode } = data;
-        
-        if (!roomCode) {
+        const normalized = normalizeRoomCode(data.roomCode);
+        if (!normalized) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
+          return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
         }
-
-        streamingService.stopStream(roomCode);
-        console.log(`🛑 Stopped streaming for room ${roomCode}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
           success: true, 
-          roomCode
+          roomCode: normalized
         }));
 
       } catch (error) {
@@ -406,20 +448,18 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
-        const { roomCode } = data;
-        
-        if (!roomCode) {
+        const normalized = normalizeRoomCode(data.roomCode);
+        if (!normalized) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
+          return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
         }
 
-        streamingService.addViewer(roomCode);
-        const viewerCount = streamingService.getViewerCount(roomCode);
+        const viewerCount = incrementViewer(normalized);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
           success: true, 
-          roomCode,
+          roomCode: normalized,
           viewerCount
         }));
 
@@ -442,20 +482,18 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
-        const { roomCode } = data;
-        
-        if (!roomCode) {
+        const normalized = normalizeRoomCode(data.roomCode);
+        if (!normalized) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
+          return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
         }
 
-        streamingService.removeViewer(roomCode);
-        const viewerCount = streamingService.getViewerCount(roomCode);
+        const viewerCount = decrementViewer(normalized);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
           success: true, 
-          roomCode,
+          roomCode: normalized,
           viewerCount
         }));
 
@@ -477,87 +515,33 @@ const server = http.createServer((req, res) => {
         return res.end(JSON.stringify({ error: MESSAGES.MISSING_ROOM_CODE }));
     }
 
-    const normalizedRoomCode = roomCode.toUpperCase();
+    const normalizedRoomCode = normalizeRoomCode(roomCode);
     const room = rooms.get(normalizedRoomCode);
-    
+
     if (!room) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ 
+      return res.end(JSON.stringify({
         error: MESSAGES.ROOM_NOT_FOUND,
         roomCode: normalizedRoomCode
       }));
     }
 
-    // Check if room has active streaming
-    // These lines are now replaced by dynamic address detection below
-    
-    // Check if HLS file exists
-    const hlsPath = path.join(__dirname, 'streams', normalizedRoomCode, 'playlist.m3u8');
-    const streamActive = fs.existsSync(hlsPath);
-    
-    // Get dynamic server address
-    const serverAddress = getServerAddress(req);
-    const hlsUrl = `${serverAddress}/streams/${normalizedRoomCode}/playlist.m3u8`;
-    const watchUrl = `${serverAddress}/watch/${normalizedRoomCode}`;
-    
-    if (!streamActive) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ 
-        error: MESSAGES.STREAM_NOT_ACTIVE,
-        roomCode: normalizedRoomCode,
-        status: MESSAGES.ROOM_EXISTS_BUT_NO_STREAM
-      }));
-    }
+    const hlsUrl = composeHlsUrl(normalizedRoomCode);
+    const watchUrl = composeViewerUrl(normalizedRoomCode);
+    const rtmpUrl = composeRtmpUrl(normalizedRoomCode);
+
+    const viewerCount = viewerStats.get(normalizedRoomCode) || 0;
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ 
+    res.end(JSON.stringify({
       success: true,
       roomCode: normalizedRoomCode,
-      hlsUrl: hlsUrl,
-      watchUrl: watchUrl,
-      status: MESSAGES.STREAMING_ACTIVE,
-      serverAddress: serverAddress
+      hlsUrl,
+      watchUrl,
+      rtmpUrl,
+      viewerCount
     }));
     return;
-  }
-
-  // Serve HLS streams
-  if (pathname.startsWith('/streams/')) {
-    const filePath = path.join(__dirname, pathname);
-    
-    // Extract room code from path for viewer tracking
-    const pathParts = pathname.split('/');
-    const roomCode = pathParts[2]; // /streams/ROOMCODE/file.m3u8
-    
-    if (fs.existsSync(filePath)) {
-      const ext = path.extname(filePath);
-      let contentType = 'application/octet-stream';
-      
-      if (ext === '.m3u8') {
-        contentType = 'application/vnd.apple.mpegurl';
-        // Track viewer activity when accessing playlist
-        if (roomCode) {
-          streamingService.updateViewerActivity(roomCode);
-        }
-      } else if (ext === '.ts') {
-        contentType = 'video/mp2t';
-        // Track viewer activity when accessing segments
-        if (roomCode) {
-          streamingService.updateViewerActivity(roomCode);
-        }
-      }
-      
-      res.setHeader('Cache-Control', 'no-cache');
-      res.writeHead(200, { 'Content-Type': contentType });
-      
-      const stream = fs.createReadStream(filePath);
-      stream.pipe(res);
-      return;
-    } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end(MESSAGES.STREAM_NOT_FOUND);
-      return;
-    }
   }
 
   // Serve viewer page
@@ -565,8 +549,8 @@ const server = http.createServer((req, res) => {
     const roomCode = pathname.split('/')[2];
     if (roomCode) {
       // Add viewer when they visit the watch page
-      streamingService.addViewer(roomCode);
-      
+      incrementViewer(roomCode);
+
       const viewerHtml = generateViewerPage(roomCode);
       res.writeHead(200, { 'Content-Type': 'text/html' });
       res.end(viewerHtml);
@@ -581,6 +565,8 @@ const server = http.createServer((req, res) => {
 
 // Function to generate viewer page HTML
 function generateViewerPage(roomCode) {
+  const normalized = normalizeRoomCode(roomCode);
+  const streamUrl = composeHlsUrl(normalized);
   return `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -652,7 +638,7 @@ function generateViewerPage(roomCode) {
     <script>
         const video = document.getElementById('video');
         const status = document.getElementById('status');
-        const streamUrl = '/streams/${roomCode}/playlist.m3u8';
+        const streamUrl = '${streamUrl}';
 
         function updateStatus(message, type = 'loading') {
             status.textContent = message;
@@ -799,11 +785,14 @@ function cleanup(ws) {
     roomCreationInProgress.delete(ws.roomCode);
     console.log(`🧹 Cleaned up room creation progress for: ${ws.roomCode}`);
   }
+
+  schedulePersistRooms();
 }
 
 // Cleanup expired rooms - chỉ xóa room khi không có client active
 function cleanupExpiredRooms() {
   const now = Date.now();
+  let changed = false;
   for (const [roomCode, room] of rooms.entries()) {
     // ✅ CHỈ xóa room nếu:
     // 1. Room đã expired VÀ
@@ -811,10 +800,12 @@ function cleanupExpiredRooms() {
     if (now > room.expiresAt && !room.android && !room.web) {
       console.log(`🗑️ Room ${roomCode} expired and no clients connected, cleaning up`);
       rooms.delete(roomCode);
+      changed = true;
     } else if (now > room.expiresAt && (room.android || room.web)) {
       // ✅ Room expired nhưng vẫn có client - extend thời gian
       console.log(`⏰ Room ${roomCode} expired but has active clients, extending timeout`);
       room.expiresAt = now + 60000; // Extend thêm 60 giây
+      changed = true;
     }
   }
   
@@ -830,6 +821,10 @@ function cleanupExpiredRooms() {
   for (const roomCode of staleProgress) {
     roomCreationInProgress.delete(roomCode);
     console.log(`🧹 Cleaned up stale room creation progress for: ${roomCode}`);
+  }
+
+  if (changed) {
+    schedulePersistRooms();
   }
 }
 
@@ -852,212 +847,6 @@ wss.on('connection', (ws, req) => {
   
   ws.isAlive = true;
   ws.on('pong', () => (ws.isAlive = true));
-
-  // Kiểm tra nếu đây là WebSocket cho stream upload
-  const pathname = url.parse(req.url).pathname;
-  
-  if (pathname === '/stream-upload') {
-    let roomCode = null;
-    let isInitialized = false;
-    const binaryQueue = []; // Queue để lưu binary data khi chưa init
-    
-    console.log(MESSAGES.STREAM_UPLOAD_CONNECTED);
-    console.log('🔍 WebSocket connection details:', {
-      url: req.url,
-      origin: req.headers.origin,
-      host: req.headers.host,
-      userAgent: req.headers['user-agent']
-    });
-    
-    ws.on('message', async (data) => {
-      try {
-        console.log(`📨 Stream WebSocket message received: type=${typeof data}, length=${data.length}`);
-        
-        if (typeof data === 'string') {
-          // JSON control message
-          console.log(`📨 Raw message:`, data);
-          const msg = JSON.parse(data);
-          console.log(`📨 Parsed message:`, msg);
-        } else {
-          // Binary data - log details
-          console.log(`📦 Binary data received: size=${data.length} bytes`);
-          console.log(`📦 First 20 bytes:`, data.slice(0, 20));
-          console.log(`📦 Data type:`, typeof data, 'Buffer:', Buffer.isBuffer(data));
-          
-          // Check if it's actually a string disguised as binary
-          try {
-            const stringData = data.toString('utf8');
-            console.log(`📦 As string:`, stringData);
-            
-            // Try to parse as JSON
-            const jsonData = JSON.parse(stringData);
-            console.log(`📦 Parsed as JSON:`, jsonData);
-            
-            // Process as init message if it's JSON
-            if (jsonData.type === 'init') {
-              console.log(`🔧 Found init message in binary data:`, jsonData);
-              console.log(`🔧 This is likely from Web client, not Android`);
-              // Process init message here
-              roomCode = jsonData.roomCode;
-              console.log(`🔧 Stream init received: roomCode=${roomCode}`);
-            }
-          } catch (parseError) {
-            console.log(`📦 Not a string or JSON, treating as binary video data`);
-            console.log(`📦 This binary data is likely from Android app, not Web client`);
-          }
-        }
-        
-        // Process init message if found
-        if (typeof data === 'string') {
-          const msg = JSON.parse(data);
-          if (msg.type === 'init') {
-            roomCode = msg.roomCode;
-            console.log(`🔧 Stream init received: roomCode=${roomCode}`);
-            console.log(`🔍 Full init message:`, JSON.stringify(msg, null, 2));
-            console.log(`🔍 WebSocket state:`, ws.readyState, 'OPEN =', WebSocket.OPEN);
-            console.log(`🔍 Current timestamp:`, Date.now());
-            
-            // Validate room code
-            if (!roomCode || typeof roomCode !== 'string' || roomCode.length !== 6) {
-              console.log(`❌ Invalid room code format: ${roomCode}`);
-              ws.send(JSON.stringify({
-                type: 'error',
-                message: MESSAGES.INVALID_ROOM_CODE_FORMAT
-              }));
-              return;
-            }
-            
-            // Check room exists
-            const normalizedRoomCode = roomCode.toUpperCase();
-            console.log(`🔍 Checking room exists: ${normalizedRoomCode}, rooms: ${Array.from(rooms.keys())}`);
-            
-            if (!rooms.has(normalizedRoomCode)) {
-              console.log(`❌ Room not found: ${normalizedRoomCode}`);
-              ws.send(JSON.stringify({
-                type: 'error',
-                message: MESSAGES.ROOM_NOT_FOUND
-              }));
-              return;
-            }
-            
-            // Store normalized roomCode
-            roomCode = normalizedRoomCode;
-            ws.roomCode = normalizedRoomCode;
-            
-            console.log(`🎬 Starting FFmpeg for room ${roomCode}...`);
-            console.log(`🔍 Calling streamingService.startStreamFromStdin(${roomCode})...`);
-            console.log(`🔍 Room exists check: ${rooms.has(roomCode)}`);
-            console.log(`🔍 Available rooms: ${Array.from(rooms.keys())}`);
-            
-            try {
-              const playlistUrl = await streamingService.startStreamFromStdin(roomCode);
-              console.log(`✅ FFmpeg started successfully, playlistUrl: ${playlistUrl}`);
-              
-              // ✅ Mark as initialized BEFORE sending response
-              isInitialized = true;
-              
-              // Send confirmation
-              const response = { 
-                type: 'stream-started', 
-                playlistUrl: playlistUrl,
-                roomCode: roomCode 
-              };
-              console.log(`📤 Sending stream-started:`, response);
-              console.log(`🔍 WebSocket readyState before send:`, ws.readyState);
-              ws.send(JSON.stringify(response));
-              console.log(`✅ stream-started message sent successfully`);
-              
-              // ✅ Process queued binary data
-              if (binaryQueue.length > 0) {
-                console.log(`📦 Processing ${binaryQueue.length} queued binary chunks...`);
-                for (const queuedChunk of binaryQueue) {
-                  streamingService.writeChunk(roomCode, queuedChunk);
-                }
-                binaryQueue.length = 0; // Clear queue
-                console.log(`✅ Queued chunks processed`);
-              }
-              
-            } catch (error) {
-              console.error(`❌ Failed to start FFmpeg:`, error);
-              ws.send(JSON.stringify({ 
-                type: 'stream-failed', 
-                error: error.message,
-                roomCode: roomCode
-              }));
-            }
-          }
-          
-        } else {
-          // Binary data - video chunks
-          console.log(`📦 Binary data received: size=${data.length} bytes, isInitialized=${isInitialized}, roomCode=${roomCode}`);
-          console.log(`📦 WebSocket path: ${req.url}, origin: ${req.headers.origin}`);
-          console.log(`📦 First 10 bytes:`, Array.from(data.slice(0, 10)));
-          
-          // ✅ Queue binary data if not initialized yet
-          if (!isInitialized || !roomCode) {
-            console.log(`📦 Queueing binary chunk (not initialized yet), queue size: ${binaryQueue.length + 1}`);
-            console.log(`📦 This binary data is being queued because stream is not initialized`);
-            binaryQueue.push(data);
-            
-            // ✅ Limit queue size to prevent memory overflow
-            if (binaryQueue.length > 100) {
-              const dropped = binaryQueue.shift();
-              console.warn(`⚠️ Dropped chunk (${dropped.length} bytes) for room ${roomCode || 'unknown'}`);
-            }
-            return;
-          }
-          
-          // Write chunk if initialized
-          const writeSuccess = streamingService.writeChunk(roomCode, data);
-          if (!writeSuccess) {
-            console.warn(`⚠️ Failed to write chunk for room ${roomCode}`);
-          }
-        }
-        
-      } catch (error) {
-        console.error('❌ Error processing stream message:', error);
-        ws.send(JSON.stringify({ 
-          type: 'error', 
-          message: 'Error processing message',
-          error: error.message 
-        }));
-      }
-    });
-    
-    ws.on('close', (code, reason) => {
-      console.log(`🔌 Stream WebSocket closed for room ${roomCode}:`, {
-        code: code,
-        reason: reason,
-        wasClean: code === 1000
-      });
-      
-      // Cleanup
-      binaryQueue.length = 0;
-      
-      if (roomCode) {
-        streamingService.stopStream(roomCode);
-      }
-    });
-    
-    ws.on('error', (error) => {
-      console.error('❌ Stream WebSocket error:', error);
-      console.error('❌ Error details:', {
-        message: error.message,
-        code: error.code,
-        errno: error.errno,
-        syscall: error.syscall
-      });
-      
-      // Cleanup
-      binaryQueue.length = 0;
-      
-      if (roomCode) {
-        streamingService.stopStream(roomCode);
-      }
-    });
-    
-    return; // Exit early for stream upload connections
-  }
 
   // Existing WebRTC signaling logic
   ws.on('message', (data) => {
@@ -1120,6 +909,7 @@ wss.on('connection', (ws, req) => {
           console.log(`🧹 Cleaning up expired room: ${normalizedRoomCode}`);
           rooms.delete(normalizedRoomCode);
           console.log(`✅ Expired room cleaned up, proceeding with new room creation`);
+          schedulePersistRooms();
         } else {
           // ✅ THÊM: Remove from progress set on error
           roomCreationInProgress.delete(normalizedRoomCode);
@@ -1141,6 +931,7 @@ wss.on('connection', (ws, req) => {
       
       // ✅ THÊM: Remove from progress set after successful creation
       roomCreationInProgress.delete(normalizedRoomCode);
+      schedulePersistRooms();
       console.log(`✅ Room creation completed for: ${normalizedRoomCode}`);
       
       send(ws, { type: 'room-created', roomCode: normalizedRoomCode });
@@ -1165,6 +956,7 @@ wss.on('connection', (ws, req) => {
       // Kiểm tra mã hết hạn
       if (Date.now() > room.expiresAt) {
         rooms.delete(normalizedRoomCode);
+        schedulePersistRooms();
         return send(ws, { type: 'room-expired', message: 'Room has expired' });
       }
       
@@ -1181,6 +973,7 @@ wss.on('connection', (ws, req) => {
       // Kết nối Android vào phòng
       room.android = ws;
       room.used = true; // Đánh dấu đã dùng
+      schedulePersistRooms();
       // LƯU Ý: cần lưu roomCode ở dạng chuẩn hóa để các message sau route đúng
       ws.roomCode = normalizedRoomCode;
       ws.role = 'android';
@@ -1188,6 +981,7 @@ wss.on('connection', (ws, req) => {
       // ✅ THÊM: Extend room timeout khi có client join
       room.expiresAt = Date.now() + 300000; // 5 phút thay vì 20 giây
       console.log(`⏰ Room ${normalizedRoomCode} timeout extended to 5 minutes`);
+      schedulePersistRooms();
       
       // Thông báo cho cả 2 client (trả về roomCode như phía web nhập để hiển thị, nhưng logic nội bộ dùng normalized)
       send(ws, { type: 'room-joined', roomCode: normalizedRoomCode, peerReady: true });
@@ -1223,6 +1017,7 @@ wss.on('connection', (ws, req) => {
           expiresAt: Date.now() + (30 * 60 * 1000), // 30 phút cho hệ thống cũ
           used: false
         });
+        schedulePersistRooms();
       }
       
       const room = rooms.get(roomCode);
@@ -1233,6 +1028,7 @@ wss.on('connection', (ws, req) => {
       room[role] = ws;
       ws.roomCode = roomCode;
       ws.role = role;
+      schedulePersistRooms();
 
       const peer = getPeer(roomCode, role);
       send(ws, { type: 'joined', sessionId, role, peerReady: !!peer });
@@ -1285,49 +1081,30 @@ wss.on('connection', (ws, req) => {
         return send(ws, { type: 'error', message: 'only web client can start streaming' });
       }
       
-      try {
-        // Giả sử web client sẽ cung cấp input URL (có thể là WebRTC stream URL)
-        const { inputUrl } = msg;
-        if (!inputUrl) {
-          return send(ws, { type: 'error', message: 'inputUrl required for streaming' });
-        }
-        
-        // Bắt đầu streaming với FFmpeg
-        streamingService.startStream(ws.roomCode, inputUrl)
-          .then(hlsUrl => {
-            const watchUrl = streamingService.getViewerUrl(ws.roomCode);
-            
-            // Thông báo stream_ready cho cả 2 clients
-            const streamReadyMessage = {
-              type: 'stream_ready',
-              roomCode: ws.roomCode,
-              hlsUrl: hlsUrl,
-              watchPageUrl: `http://${SERVER_IP}:${PORT}${watchUrl}`,
-              timestamp: new Date().toISOString()
-            };
-            
-            // Gửi cho web client
-            send(ws, streamReadyMessage);
-            
-            // Gửi cho android client nếu có
-            const peer = getPeer(ws.roomCode, ws.role);
-            if (peer) {
-              send(peer, streamReadyMessage);
-            }
-            
-            console.log(`🎬 Stream started for room ${ws.roomCode}`);
-            console.log(`   HLS URL: ${hlsUrl}`);
-            console.log(`   Watch URL: ${watchUrl}`);
-          })
-          .catch(error => {
-            console.error('Error starting stream:', error);
-            send(ws, { type: 'error', message: 'Failed to start streaming' });
-          });
-        
-      } catch (error) {
-        console.error('Error starting stream:', error);
-        send(ws, { type: 'error', message: 'Failed to start streaming' });
+      const normalized = normalizeRoomCode(ws.roomCode);
+      const hlsUrl = composeHlsUrl(normalized);
+      const watchUrl = composeViewerUrl(normalized);
+      const rtmpUrl = composeRtmpUrl(normalized);
+
+      const streamReadyMessage = {
+        type: 'stream_ready',
+        roomCode: normalized,
+        hlsUrl,
+        watchPageUrl: watchUrl,
+        rtmpUrl,
+        timestamp: new Date().toISOString()
+      };
+
+      send(ws, streamReadyMessage);
+
+      const peer = getPeer(ws.roomCode, ws.role);
+      if (peer) {
+        send(peer, streamReadyMessage);
       }
+
+      console.log(`🎬 Stream setup ready for room ${normalized}`);
+      console.log(`   RTMP ingest: ${rtmpUrl}`);
+      console.log(`   HLS URL: ${hlsUrl}`);
       return;
     }
 
@@ -1341,29 +1118,20 @@ wss.on('connection', (ws, req) => {
         return send(ws, { type: 'error', message: 'only web client can stop streaming' });
       }
       
-      try {
-        streamingService.stopStream(ws.roomCode);
-        
-        // Thông báo stream stopped
-        const streamStoppedMessage = {
-          type: 'stream_stopped',
-          roomCode: ws.roomCode,
-          timestamp: new Date().toISOString()
-        };
-        
-        send(ws, streamStoppedMessage);
-        
-        const peer = getPeer(ws.roomCode, ws.role);
-        if (peer) {
-          send(peer, streamStoppedMessage);
-        }
-        
-        console.log(`🛑 Stream stopped for room ${ws.roomCode}`);
-        
-      } catch (error) {
-        console.error('Error stopping stream:', error);
-        send(ws, { type: 'error', message: 'Failed to stop streaming' });
+      const streamStoppedMessage = {
+        type: 'stream_stopped',
+        roomCode: normalizeRoomCode(ws.roomCode),
+        timestamp: new Date().toISOString()
+      };
+      
+      send(ws, streamStoppedMessage);
+      
+      const peer = getPeer(ws.roomCode, ws.role);
+      if (peer) {
+        send(peer, streamStoppedMessage);
       }
+      
+      console.log(`🛑 Stream stopped notice for room ${ws.roomCode}`);
       return;
     }
 
@@ -1385,6 +1153,7 @@ wss.on('connection', (ws, req) => {
         // Xóa phòng khỏi danh sách
         rooms.delete(ws.roomCode);
         console.log(`Room ${ws.roomCode} deleted due to ${ws.role} leaving`);
+        schedulePersistRooms();
       }
       
       // Reset client state
