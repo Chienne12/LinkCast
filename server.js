@@ -174,7 +174,14 @@ function getServerAddress(req) {
     const host = req.headers.host;
     // If it's not localhost, use the host from request
     if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
-      return `http://${host}`;
+      const forwardedProtoHeader = req.headers['x-forwarded-proto'] || req.headers['x-forwarded-protocol'];
+      const forwardedProto = Array.isArray(forwardedProtoHeader)
+        ? forwardedProtoHeader[0]
+        : (forwardedProtoHeader || '').split(',')[0].trim();
+      const protocol = forwardedProto === 'http' || forwardedProto === 'https'
+        ? forwardedProto
+        : 'https';
+      return `${protocol}://${host}`;
     }
   }
   
