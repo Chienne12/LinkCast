@@ -181,10 +181,18 @@ function handleStreamStart(req, res) {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({
                 success: true,
-                room: room,
                 streamUrl: publicWatchUrl,
                 rtmpUrl: rtmpUrl,
                 hlsUrl: hlsUrl,
+                stream: {
+                    ...room.stream,
+                    viewerUrl: publicWatchUrl
+                },
+                room: {
+                    code: room.code,
+                    hostId: room.hostId,
+                    participantCount: room.participants.length
+                },
                 video: {
                     width: 1920,
                     height: 1080,
