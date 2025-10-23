@@ -149,6 +149,15 @@ function handleStreamStart(req, res) {
                 status: 'active'
             };
             
+            broadcastToRoom(room.id, {
+                type: 'stream:started',
+                data: {
+                    roomCode,
+                    stream: room.stream,
+                    participantCount: room.participants.length
+                }
+            });
+            
             console.log(`Stream started in room: ${roomCode}`);
             
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -203,6 +212,14 @@ function handleStreamStop(req, res) {
                 room.stream.status = 'stopped';
                 room.stream.stoppedAt = new Date().toISOString();
             }
+            broadcastToRoom(room.id, {
+                type: 'stream:stopped',
+                data: {
+                    roomCode,
+                    stream: room.stream,
+                    participantCount: room.participants.length
+                }
+            });
             
             console.log(`Stream stopped in room: ${roomCode}`);
             
