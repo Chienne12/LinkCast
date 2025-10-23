@@ -349,7 +349,29 @@ function handleWebSocketCreateRoom(ws, message) {
 
 // WebSocket room joining
 function handleWebSocketJoinRoom(ws, message) {
-    const { roomCode } = message.data;
+    const payload = (message && typeof message === 'object' && message.data && typeof message.data === 'object')
+        ? message.data
+        : null;
+
+    if (!payload) {
+        ws.send(JSON.stringify({
+            type: 'error',
+            data: { message: 'Invalid join-room payload' }
+        }));
+        console.warn(`join-room payload missing data object from ${ws.clientId}`);
+        return;
+    }
+
+    const { roomCode } = payload;
+
+    if (!roomCode) {
+        ws.send(JSON.stringify({
+            type: 'error',
+            data: { message: 'Room code is required' }
+        }));
+        console.warn(`join-room payload missing roomCode from ${ws.clientId}`);
+        return;
+    }
     
     // Find room by code
     let room = null;
