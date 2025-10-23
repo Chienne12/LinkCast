@@ -49,10 +49,10 @@ const server = http.createServer((req, res) => {
     else if (path === '/api/room/create' && method === 'POST') {
         handleCreateRoom(req, res);
     }
-    else if (path === '/api/stream/start' && method === 'POST') {
+    else if ((path === '/api/stream/start' || path === '/api/start-stream') && method === 'POST') {
         handleStreamStart(req, res);
     }
-    else if (path === '/api/stream/stop' && method === 'POST') {
+    else if ((path === '/api/stream/stop' || path === '/api/stop-stream') && method === 'POST') {
         handleStreamStop(req, res);
     }
     else if (path === '/api/rooms' && method === 'GET') {
