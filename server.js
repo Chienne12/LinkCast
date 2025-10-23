@@ -149,6 +149,24 @@ function handleStreamStart(req, res) {
                 status: 'active'
             };
             
+            const forwardedProto = req.headers['x-forwarded-proto'];
+            const isSecure = (forwardedProto && forwardedProto.includes('https')) || req.connection.encrypted;
+            const protocol = isSecure ? 'https' : 'http';
+            const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || `localhost:${PORT}`).toString().split(',')[0].trim();
+            const baseHost = hostHeader.replace(/^https?:\/\//, '');
+            const publicWatchUrl = `${protocol}://${baseHost}/watch/${roomCode}`;
+
+            const manualRtmpBase = process.env.RTMP_BASE_URL ? process.env.RTMP_BASE_URL.replace(/\/$/, '') : null;
+            const inferredRtmpHost = baseHost.split(':')[0];
+            const rtmpUrl = manualRtmpBase
+                ? `${manualRtmpBase}/${roomCode}`
+                : `rtmp://${inferredRtmpHost}/live/${roomCode}`;
+
+            const manualHlsBase = process.env.HLS_BASE_URL ? process.env.HLS_BASE_URL.replace(/\/$/, '') : null;
+            const hlsUrl = manualHlsBase
+                ? `${manualHlsBase}/${roomCode}.m3u8`
+                : `${protocol}://${baseHost}/hls/${roomCode}.m3u8`;
+
             broadcastToRoom(room.id, {
                 type: 'stream:started',
                 data: {
@@ -164,7 +182,17 @@ function handleStreamStart(req, res) {
             res.end(JSON.stringify({
                 success: true,
                 room: room,
-                streamUrl: `${req.headers.host}/watch/${roomCode}`
+                streamUrl: publicWatchUrl,
+                rtmpUrl: rtmpUrl,
+                hlsUrl: hlsUrl,
+                video: {
+                    width: 1920,
+                    height: 1080,
+                    bitrate: 3_500_000,
+                    fps: 30,
+                    keyFrameIntervalSec: 1,
+                    audioBitrate: 128_000
+                }
             }));
         } catch (error) {
             console.error('Error starting stream:', error);
