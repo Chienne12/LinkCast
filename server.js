@@ -358,7 +358,7 @@ function handleWebSocketJoinRoom(ws, message) {
             type: 'error',
             data: { message: 'Invalid join-room payload' }
         }));
-        console.warn(`join-room payload missing data object from ${ws.clientId}`);
+        console.warn(`join-room payload missing data object from ${ws.clientId}:`, message);
         return;
     }
 
@@ -369,7 +369,7 @@ function handleWebSocketJoinRoom(ws, message) {
             type: 'error',
             data: { message: 'Room code is required' }
         }));
-        console.warn(`join-room payload missing roomCode from ${ws.clientId}`);
+        console.warn(`join-room payload missing roomCode from ${ws.clientId}:`, message);
         return;
     }
     
